@@ -194,3 +194,5 @@ cython_debug/
 .cursorindexingignore
 
 .vscode
+# Webcam recordings (video + landmarks), see --record
+recordings/

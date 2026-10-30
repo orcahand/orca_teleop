@@ -494,6 +494,7 @@ def _mediapipe_publisher(
     confidence: float,
     show_video: bool,
     camera_index: int = 0,
+    record_dir: str | None = None,
 ) -> None:
     """Entry point for the MediaPipe publisher."""
     from orca_teleop.ingress.mediapipe.publisher import MediaPipePublisher
@@ -519,6 +520,7 @@ def _mediapipe_publisher(
         confidence=confidence,
         show_video=show_video,
         camera_index=camera_index,
+        record_dir=record_dir,
     )
     publisher.run()
 
@@ -575,6 +577,7 @@ def run_local(
     retargeter_backend: RetargeterBackend = "adaptive_analytical",
     retargeter_config_path: str | None = None,
     camera_index: int = 0,
+    record_dir: str | None = None,
 ) -> None:
     """Run ``run()`` plus a local MediaPipe publisher for one-command teleop.
     Useful for prototyping.
@@ -584,7 +587,7 @@ def run_local(
     # Start the publisher in a child process so the webcam doesn't fight with main thread
     publisher_process = multiprocessing.Process(
         target=_mediapipe_publisher,
-        args=(port, handedness, confidence, show_video, camera_index),
+        args=(port, handedness, confidence, show_video, camera_index, record_dir),
         name="mediapipe-publisher",
         daemon=True,
     )

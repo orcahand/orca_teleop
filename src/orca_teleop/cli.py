@@ -46,6 +46,12 @@ def _common_parser(description: str) -> argparse.ArgumentParser:
         "--camera-index", type=int, default=0, help="OpenCV camera index (default: 0)"
     )
     parser.add_argument(
+        "--record",
+        default=None,
+        metavar="DIR",
+        help="Record the webcam session (raw frames + landmarks) into DIR for offline replay",
+    )
+    parser.add_argument(
         "--retargeter",
         default="adaptive_analytical",
         choices=["rmsprop", "adaptive_analytical"],
@@ -77,9 +83,12 @@ def _launch(args, sink, handedness: str) -> None:
         retargeter_backend=args.retargeter,
         retargeter_config_path=args.retarget_config,
     )
+    if args.record and not args.local:
+        raise SystemExit("--record records the local webcam publisher; drop --no-local")
     if args.local:
         run_local(handedness=handedness, confidence=args.confidence,
-                  show_video=args.show_video, camera_index=args.camera_index, **common)
+                  show_video=args.show_video, camera_index=args.camera_index,
+                  record_dir=args.record, **common)
     else:
         run(**common)
 
