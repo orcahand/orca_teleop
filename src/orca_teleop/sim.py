@@ -93,7 +93,8 @@ class OrcaHandSimSink(RecordableSink):
         self._dt: float = 1.0 / DEFAULT_RENDER_FPS
         self._renderer: Any | None = None
         self._record_camera: Any | None = None
-        self._retarget_model_path: str | None = None
+        # Known before connect(): run() builds the retargeter before the sink connects.
+        self._retarget_model_path: str | None = self._resolve_retarget_model_path(version)
         self._hand_config: Any | None = None
 
     def connect(self) -> None:
@@ -323,7 +324,7 @@ class OrcaHandSimSink(RecordableSink):
             Path(orca_core.__file__).resolve().parent
             / "models"
             / version
-            / f"orcahand_{self._env_name}"
+            / f"orcahand-{self._env_name}"
             / "config.yaml"
         )
         return str(model_path) if model_path.exists() else None

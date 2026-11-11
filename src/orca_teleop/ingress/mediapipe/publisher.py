@@ -123,7 +123,10 @@ class MediaPipePublisher:
 
         # Latest frame data (written by callback, read by stream generator)
         self._lock = threading.Lock()
+        # The stream generator sleeps on this until a result arrives, instead of polling.
+        self._new_result = threading.Condition(self._lock)
         self._latest_keypoints: np.ndarray | None = None
+        self._latest_capture_ns = 0
         self._fresh = False
 
         # Visualization state
@@ -152,28 +155,26 @@ class MediaPipePublisher:
 
         with self._lock:
             self._latest_keypoints = keypoints
+            self._latest_capture_ns = timestamp_ms * 1_000_000  # MediaPipe's stamp = capture time
             self._fresh = True
             if self._show_video:
                 self._latest_image_landmarks = result.hand_landmarks[0]
+            self._new_result.notify()
 
     def _frame_generator(self):
         """Yield HandFrame protos as fast as new data arrives."""
         while True:
-            with self._lock:
-                if not self._fresh:
-                    kp = None
-                else:
-                    kp = self._latest_keypoints.copy()
-                    self._fresh = False
-
-            if kp is None:
-                time.sleep(0.001)
-                continue
+            with self._new_result:
+                if not self._new_result.wait_for(lambda: self._fresh, timeout=0.1):
+                    continue
+                kp = self._latest_keypoints.copy()
+                capture_ns = self._latest_capture_ns
+                self._fresh = False
 
             yield hand_stream_pb2.HandFrame(
                 keypoints=kp.ravel().tolist(),
                 handedness=self._handedness,
-                timestamp_ns=time.time_ns(),
+                timestamp_ns=capture_ns,
             )
 
     def run(self) -> None:

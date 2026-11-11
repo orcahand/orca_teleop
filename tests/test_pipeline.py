@@ -12,9 +12,9 @@ import numpy as np
 import pytest
 from conftest import CANONICAL_LANDMARK_SHAPE, plausible_hand_keypoints
 from orca_core import OrcaJointPositions
-from orca_teleop.constants import MOTION_NUM_STEPS
 from orca_core.hardware_hand import MockOrcaHand
 
+from orca_teleop.constants import MOTION_NUM_STEPS
 from orca_teleop.ingress import hand_stream_pb2, hand_stream_pb2_grpc
 from orca_teleop.ingress.server import HandLandmarks, IngressServer
 from orca_teleop.pipeline import (
@@ -47,6 +47,12 @@ def _midpoint_action() -> OrcaJointPositions:
     """Build an OrcaJointPositions at every joint's ROM midpoint (degrees)."""
     roms = MockOrcaHand().config.joint_roms_dict
     return OrcaJointPositions({j: 0.5 * (lo + hi) for j, (lo, hi) in roms.items()})
+
+
+def _wait_for(condition, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.01)
 
 
 def _start(target, *args, name: str | None = None) -> threading.Thread:
@@ -459,18 +465,31 @@ def test_robot_finally_cleans_up_on_exception(monkeypatch):
     assert instances[0].disabled and instances[0].disconnected
 
 
+class _NoopRetargeter:
+    """Stands in for the real retargeter, which needs the hand model on disk."""
+
+    @classmethod
+    def from_paths(cls, *_args, **_kwargs):
+        return cls()
+
+    def retarget(self, _target_pose):
+        return None
+
+
 def test_run_raises_on_connect_failure(monkeypatch):
     monkeypatch.setattr("orca_teleop.pipeline.OrcaHand", _FailingConnectHand)
+    monkeypatch.setattr("orca_teleop.pipeline.Retargeter", _NoopRetargeter)
     with pytest.raises(RuntimeError, match="failed to connect"):
-        run("ignored")
+        run("ignored", port=0)
 
 
 def test_run_does_not_start_producers_if_robot_fails(monkeypatch):
     """Checks threads don't spawn if the robot fails to connect."""
     monkeypatch.setattr("orca_teleop.pipeline.OrcaHand", _FailingConnectHand)
+    monkeypatch.setattr("orca_teleop.pipeline.Retargeter", _NoopRetargeter)
     before = {t.name for t in threading.enumerate()}
     with pytest.raises(RuntimeError):
-        run("ignored")
+        run("ignored", port=0)
     time.sleep(0.05)
     after_names = {t.name for t in threading.enumerate() if t.is_alive()}
     leaked = after_names - before
@@ -493,8 +512,9 @@ def test_run_starts_then_stops_cleanly(monkeypatch, patch_mock_hand):  # noqa: P
         return real_get(self, *args, **kwargs)
 
     monkeypatch.setattr(queue.Queue, "get", fake_get)
+    monkeypatch.setattr("orca_teleop.pipeline.Retargeter", _NoopRetargeter)
 
-    run(None)
+    run(None, port=0)
     time.sleep(0.05)
     alive = {t.name for t in threading.enumerate() if t.is_alive()}
     assert "retargeter" not in alive
@@ -567,7 +587,6 @@ def test_retargeter_converts_metaquest_right_hand_landmarks(monkeypatch):
             timestamp_ns=time.time_ns(),
         )
     )
-    q.landmarks_q.put(_SHUTDOWN)
     stop = threading.Event()
     thread = threading.Thread(
         target=retargeter_worker,
@@ -576,6 +595,8 @@ def test_retargeter_converts_metaquest_right_hand_landmarks(monkeypatch):
         daemon=True,
     )
     thread.start()
+    _wait_for(lambda: "keypoints" in captured)
+    q.landmarks_q.put(_SHUTDOWN)
     thread.join(timeout=2.0)
 
     assert not thread.is_alive()
@@ -609,7 +630,6 @@ def test_retargeter_preserves_webxr_landmarks_and_wrist_angle(monkeypatch):
             wrist_angle_degrees=17.5,
         )
     )
-    q.landmarks_q.put(_SHUTDOWN)
     thread = threading.Thread(
         target=retargeter_worker,
         args=(q, threading.Event()),
@@ -617,6 +637,8 @@ def test_retargeter_preserves_webxr_landmarks_and_wrist_angle(monkeypatch):
         daemon=True,
     )
     thread.start()
+    _wait_for(lambda: "keypoints" in captured)
+    q.landmarks_q.put(_SHUTDOWN)
     thread.join(timeout=2.0)
 
     assert not thread.is_alive()
