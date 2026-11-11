@@ -3,9 +3,9 @@
 Streams the recorded landmarks over gRPC at the pace they were captured, so the
 whole robot side (ingress, retargeter, sink) runs exactly as with a camera. Takes a
 ``--record`` folder (``landmarks.jsonl``) or a fidelity corpus file (``.npz`` with
-``world_tri``, ``world_front`` and ``capture_ns``, as ``scripts/fidelity_corpus.py``
-writes it; the triangulated landmarks unless ``--front``). Gaps where nothing was
-detected stay gaps, so tracking loss behaves as it did live.
+``world_tri``, ``world_front`` and ``capture_ns``, from the two-camera tools; the
+triangulated landmarks unless ``--front``). Gaps where nothing was detected stay gaps,
+so tracking loss behaves as it did live.
 
     # terminal 1: the robot side, waiting for a publisher
     uv run --extra teleop orca-teleop-urdf --no-local

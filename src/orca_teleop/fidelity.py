@@ -1,8 +1,7 @@
 """How faithfully the robot hand follows a recorded human hand.
 
-Used by ``scripts/fidelity_score.py`` (scores a corpus of recordings) and the
-regression test. Everything is measured on the commanded joint
-angles, the way the robot would execute them:
+Used by the regression test (``tests/test_fidelity.py``). Everything is measured on
+the commanded joint angles, the way the robot would execute them:
 
 - pinch success: at moments the human's thumb touches a fingertip (seen in two
   camera views), does the robot's thumb touch that finger? Measured as the

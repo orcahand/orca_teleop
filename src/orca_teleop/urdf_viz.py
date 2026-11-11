@@ -35,7 +35,8 @@ def _default_model_path(hand_type: str, version: str) -> str:
 HAND_RGBA = np.array([0.07, 0.07, 0.08, 1.0])
 SKIN_RGBA = np.array([0.94, 0.94, 0.92, 1.0])
 # The viewer always shows the wrist straight (wrist joint -> middle MCP in line with the
-# forearm), whatever is commanded; the webcam never sets the wrist anyway.
+# forearm), whatever is commanded; the webcam never sets the wrist anyway. A Quest's
+# wrist angle is not shown.
 STRAIGHT_WRIST_DEG = 3.0
 
 

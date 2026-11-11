@@ -106,7 +106,8 @@ uv run --no-sync python scripts/fidelity_inspector.py recordings/thumb-01 \
 ```
 
 `tests/test_fidelity.py` replays a recorded pinch clip and fails if pinch, curl,
-jitter or lag get worse.
+jitter or lag get worse. It needs the v2.1 model (`ORCAHAND_DESCRIPTION_DIR`) and
+skips without it; this repo has no CI, so run it locally.
 
 Run the test suite from the repository root with:
 
