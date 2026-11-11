@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.10, <3.13"
 resolution-markers = [
     "python_full_version >= '3.12' and sys_platform == 'darwin'",
@@ -2703,7 +2703,7 @@ wheels = [
 
 [[package]]
 name = "orca-core"
-version = "0.7.0"
+version = "0.13.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "dynamixel-sdk" },
@@ -2714,9 +2714,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e8/e0/c0a443ede09ab4cbda0b0cb935797f7114c288b6d6a7942f705689e27fe8/orca_core-0.7.0.tar.gz", hash = "sha256:6a08b9389d2ef40090a84fc6797b39f044b15a976e7a9ce0b06c79e3537ccb65", size = 638940, upload-time = "2026-10-14T12:47:09.901Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/24/ba/4eb5245fccc08bd6295adad25b171c13acb1182ce37c9e6b3417439c24cf/orca_core-0.13.0.tar.gz", hash = "sha256:d21d13da7e58728444e0aa0ddf00bbcb44b1d777d5b8ae5289c8d8f809bfc111", size = 761445, upload-time = "2026-11-10T21:33:47.715Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/77/3d/af62e1f2a97cbc9fceb8060c31918de1dd4b1e4b11362c644ef57661869f/orca_core-0.7.0-py3-none-any.whl", hash = "sha256:9ad03b9b46004edd8508c12924974f95f03882adbe026104942ea515f37c0188", size = 307285, upload-time = "2026-10-14T12:47:08.531Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/49/4a9cafa473ec8c12934a84bf8aae785da8d513587a17e7b50720ba1d7cd6/orca_core-0.13.0-py3-none-any.whl", hash = "sha256:d687621ee13f24dcac8ae7b6cce379cf0425dc68147a9374a86a24959e6a996a", size = 366141, upload-time = "2026-11-10T21:33:46.021Z" },
 ]
 
 [[package]]
@@ -2811,7 +2811,7 @@ requires-dist = [
     { name = "nlopt", marker = "extra == 'adaptive'" },
     { name = "numpy", specifier = ">=2.0.0,<3.0.0" },
     { name = "opencv-python", marker = "extra == 'mediapipe'" },
-    { name = "orca-core", specifier = ">=0.7.0,<0.8.0" },
+    { name = "orca-core", specifier = ">=0.13.0,<0.14.0" },
     { name = "orca-sim", marker = "extra == 'sim'", git = "https://github.com/orcahand/orca_sim.git?rev=main" },
     { name = "orca-teleop", extras = ["adaptive", "mediapipe", "urdf-viz"], marker = "extra == 'teleop'" },
     { name = "orca-teleop", extras = ["mediapipe", "metaquest", "adaptive"], marker = "extra == 'learning'" },
