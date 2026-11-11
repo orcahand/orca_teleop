@@ -5,14 +5,49 @@ retarget:
   huber_delta_cm: 2.0
   huber_delta_dir: 0.5
   norm_delta: 0.04
+  # Smoothing of the joint targets: One Euro, smooth when still, little lag when moving.
+  # min_cutoff 0.1 / beta 4 (2026-11-11), against 0.4 / 2 before, front camera on the
+  # corpus: filter lag 18 vs 26 ms (signed best shift, human angle -> command), jitter
+  # 0.133 vs 0.126 deg/frame over all frames. On the hand, holding still: command jitter
+  # 0.051 vs 0.065 deg per command; the motors' lag behind commands is unchanged.
+  # rate_hz is the camera's frame rate. `filter: {type: lowpass}` brings back lp_alpha.
+  filter: {type: one_euro, min_cutoff_hz: 0.1, beta: 4.0, d_cutoff_hz: 1.0, rate_hz: 30.0}
   lp_alpha: 0.25
   w_pos: 1.0
   w_dir: 1.0
   w_full_hand: 1.0
   scaling: 1.0
+  # Measure the thumb's shape targets from the thumb base instead of the palm
+  # point (the robot's thumb base sits ~2 cm from where the human's lands).
+  # Fades back to the palm point as the thumb nears a finger, so pinches are
+  # unchanged.
+  thumb_shape_from_base: false
+
+  # Point the thumb's metacarpal (CMC->MCP) and proximal (MCP->IP) segments like
+  # the human's, so the base joints follow instead of making up for the offset
+  # between the robot's and the human's thumb base. 0 = off.
+  w_thumb_segment_dir: {metacarpal: 10.0, proximal: 10.0}
+
+  # The same for the four fingers: proximal (MCP -> PIP joint) and distal (PIP joint
+  # -> the last segment's axis) directions, scale-free, so the robot's other finger
+  # proportions don't bend its joints (e.g. the PIP backwards). 0 = off.
+  w_finger_segment_dir: {proximal: 30.0, distal: 30.0}
+  # anatomical: the human's MCP/PIP landmarks go to the robot's MCP/PIP joints, and
+  # the robot's last segment points like the human's PIP -> TIP. (legacy: one joint
+  # further out, as before.)
+  finger_landmarks: anatomical
+  # axis: a last segment's direction is measured along its own axis, not towards the
+  # fingertip point, which sits on the skin off that axis.
+  distal_direction: axis
+
+  # When the thumb nears a fingertip, pull the robot's thumb pad and finger pad (the
+  # model's {side}_{digit}_pad frames) to the human's gap minus contact_cm (the human's
+  # tip landmarks are still about that far apart when the skins touch). Weighs 1 up to
+  # near_cm, fades out by far_cm. 0 = off.
+  pinch: {weight: 10.0, contact_cm: 1.5, near_cm: 2.5, far_cm: 4.0}
 
   w_dir_unblended:
-    thumb: 1.0
+    thumb: 10.0
     index: 3.0
     middle: 3.0
     ring: 3.0
@@ -25,6 +60,10 @@ retarget:
     ring: [1.0, 1.0, 1.0]
     pinky: [1.05, 1.15, 1.15]
 
+  # Close the robot's pinch when the human's thumb and fingertip (nearly)
+  # touch: below start_below_cm the gap shrinks by up to cm. 0 = off.
+  pinch_squeeze: {cm: 0.0, full_below_cm: 1.5, start_below_cm: 2.5}
+
   pinch_thresholds_cm:
     index: {d1: 2.0, d2: 5.0}
     middle: {d1: 2.0, d2: 5.0}
@@ -36,108 +75,151 @@ retarget:
     y: 0.0
     z: 0.0
 
+# v1 models: the URDF has no fingertip frames, so tip_offset_m places the fingertip in
+# the last segment's link frame (the hand-measured offsets teleop used before v2.1).
 robot_frames:
   right:
     palm: right_palm
     fingers:
       thumb:
+        base: right_thumb_mp
         pip: right_thumb_ip
         dip: right_thumb_dp
         tip: right_thumb_fingertip
+        tip_offset_m: [0.0, 0.0, 0.0305]
       index:
+        base: right_index_mp
         pip: right_index_pip
         dip: right_index_ip
         tip: right_index_fingertip
+        tip_offset_m: [0.0, 0.0, 0.0433]
       middle:
+        base: right_middle_mp
         pip: right_middle_pip
         dip: right_middle_ip
         tip: right_middle_fingertip
+        tip_offset_m: [0.0, 0.0, 0.0453]
       ring:
+        base: right_ring_mp
         pip: right_ring_pip
         dip: right_ring_ip
         tip: right_ring_fingertip
+        tip_offset_m: [0.0, 0.0, 0.0453]
       pinky:
+        base: right_pinky_mp
         pip: right_pinky_pip
         dip: right_pinky_ip
         tip: right_pinky_fingertip
+        tip_offset_m: [0.0, 0.0, 0.0383]
   left:
     palm: left_palm
     fingers:
       thumb:
+        base: left_thumb_mp
         pip: left_thumb_ip
         dip: left_thumb_dp
         tip: left_thumb_fingertip
+        tip_offset_m: [0.0, 0.0, 0.0305]
       index:
+        base: left_index_mp
         pip: left_index_pip
         dip: left_index_ip
         tip: left_index_fingertip
+        tip_offset_m: [0.0, 0.0, 0.0433]
       middle:
+        base: left_middle_mp
         pip: left_middle_pip
         dip: left_middle_ip
         tip: left_middle_fingertip
+        tip_offset_m: [0.0, 0.0, 0.0453]
       ring:
+        base: left_ring_mp
         pip: left_ring_pip
         dip: left_ring_ip
         tip: left_ring_fingertip
+        tip_offset_m: [0.0, 0.0, 0.0453]
       pinky:
+        base: left_pinky_mp
         pip: left_pinky_pip
         dip: left_pinky_ip
         tip: left_pinky_fingertip
+        tip_offset_m: [0.0, 0.0, 0.0383]
 
-# NOTE: the v2 URDF four-finger chains have only two joints (mcp, pip) and no
-# dedicated `dip` frame, so the pip/dip retarget keypoints map onto the two
-# successive joint frames that do exist: pip -> *_mcp (proximal), dip -> *_pip
-# (distal). They must stay distinct — pointing both at the same frame collapses
-# the full-hand position constraint into a redundant target. The thumb keeps its
-# own ip/dip frames.
+# v2 models (orcahand_description with the v2.1 shapes and tip/pad frames): every point
+# is a frame of the model. Each finger's palm side base is the frame at its spread joint
+# (thumb: the CMC joint), pip/dip are the MCP and PIP joint frames (thumb: MCP and IP),
+# and tip is the model's {side}_{digit}_tip frame, on the skin with Z pointing out of it.
+# MediaPipe's TIP landmark sits a few millimetres inside the finger, so without
+# tip_offset_m the matched point is TIP_LANDMARK_OFFSET_M (retargeting/constants.py)
+# along the tip frame's own axes: 3 mm inwards along -Z.
 robot_frames_by_version:
   v2:
     right:
-      palm: right_palm
+      palm: right_carpals
       fingers:
         thumb:
+          base: right_thumb_tp
           pip: right_thumb_mcp
           dip: right_thumb_dip
-          tip: right_thumb_fingertip
+          tip: right_thumb_tip
+          pad: right_thumb_pad
         index:
+          base: right_index_ap
           pip: right_index_mcp
           dip: right_index_pip
-          tip: right_index_fingertip
+          tip: right_index_tip
+          pad: right_index_pad
         middle:
+          base: right_middle_ap
           pip: right_middle_mcp
           dip: right_middle_pip
-          tip: right_middle_fingertip
+          tip: right_middle_tip
+          pad: right_middle_pad
         ring:
+          base: right_ring_ap
           pip: right_ring_mcp
           dip: right_ring_pip
-          tip: right_ring_fingertip
+          tip: right_ring_tip
+          pad: right_ring_pad
         pinky:
+          base: right_pinky_ap
           pip: right_pinky_mcp
           dip: right_pinky_pip
-          tip: right_pinky_fingertip
+          tip: right_pinky_tip
+          pad: right_pinky_pad
     left:
-      palm: left_palm
+      palm: left_carpals
       fingers:
         thumb:
-          pip: left_thumb_ip
+          base: left_thumb_tp
+          pip: left_thumb_mcp
           dip: left_thumb_dip
-          tip: left_thumb_fingertip
+          tip: left_thumb_tip
+          pad: left_thumb_pad
         index:
+          base: left_index_ap
           pip: left_index_mcp
           dip: left_index_pip
-          tip: left_index_fingertip
+          tip: left_index_tip
+          pad: left_index_pad
         middle:
+          base: left_middle_ap
           pip: left_middle_mcp
           dip: left_middle_pip
-          tip: left_middle_fingertip
+          tip: left_middle_tip
+          pad: left_middle_pad
         ring:
+          base: left_ring_ap
           pip: left_ring_mcp
           dip: left_ring_pip
-          tip: left_ring_fingertip
+          tip: left_ring_tip
+          pad: left_ring_pad
         pinky:
+          base: left_pinky_ap
           pip: left_pinky_mcp
           dip: left_pinky_pip
-          tip: left_pinky_fingertip
+          tip: left_pinky_tip
+          pad: left_pinky_pad
 
 joint_name_aliases:
   right:

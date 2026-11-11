@@ -10,11 +10,6 @@ thumb comes first everywhere. Record a session with ``--record DIR`` on
     uv run --no-sync python scripts/fidelity_inspector.py recordings/thumb-01 \\
         --model-path ~/.orca_ui/hands/orcahand-right/config.yaml --no-viewer
 
-    # Same, with other fingertip points (e.g. docs/tools/tip_points.yaml from the tip picker)
-    uv run --no-sync python scripts/fidelity_inspector.py recordings/thumb-01 \\
-        --model-path ~/.orca_ui/hands/orcahand-right/config.yaml --no-viewer \\
-        --tip-points docs/tools/tip_points.yaml
-
     # Score + 3D viewer with a timeline at http://localhost:8091
     uv run --no-sync --with viser==1.1.1 python scripts/fidelity_inspector.py recordings/thumb-01 \\
         --model-path ~/.orca_ui/hands/orcahand-right/config.yaml
@@ -23,9 +18,12 @@ What is compared (all in the robot's frame, anchored at the robot's palm point,
 exactly as the solver's loss sees it):
 
   tip error     robot palm->tip vector vs the target's, cm
-  tip angle     robot last-segment direction (tip - dip) vs the human's, degrees
+  tip angle     robot last-segment direction vs the human's, degrees, measured
+                to the point the solver uses (on the finger's axis with the
+                tuned config's distal_direction: axis)
   pinch gap     robot thumb-finger distance minus the human's (scaled), cm;
-                only frames where the human gap is under 5 cm
+                only frames where the human's fingers touch (gap under 2 cm),
+                not the approach
   at limit      share of frames each thumb joint sits within 1 deg of its range end
 """
 
@@ -44,7 +42,7 @@ from orca_teleop.ingress.landmark_recording import load_recording
 from orca_teleop.retargeting import utils as retargeter_utils
 from orca_teleop.retargeting.retargeter import FINGERS, Retargeter, TargetPose
 
-PINCH_GAP_CM = 5.0
+PINCH_GAP_CM = 2.0
 LIMIT_TOL_DEG = 1.0
 FINGER_COLORS = {
     "thumb": (230, 73, 128),
@@ -53,18 +51,6 @@ FINGER_COLORS = {
     "ring": (250, 176, 5),
     "pinky": (132, 94, 247),
 }
-
-
-def use_tip_points(r, path: str) -> None:
-    """Swap the retargeter's fingertip offsets for picked points (last-segment frame, metres)."""
-    import yaml
-
-    points = yaml.safe_load(pathlib.Path(path).read_text())["points"]
-    for finger, frame_name in zip(FINGERS, r._frame_map.tip, strict=True):
-        r._frame_offsets[r._computed_frame_names.index(frame_name)] = np.array(
-            points[finger]["xyz_m"], dtype=np.float64
-        )
-    r._build_target_alignment_params()  # the auto-scale reference depends on the tips
 
 
 def replay(rec, retargeter) -> dict:
@@ -123,7 +109,7 @@ def replay(rec, retargeter) -> dict:
             if key == "tip_err_cm":  # the commanded pose is the one shown and scored further
                 out["q_full"][k], out["q_deg"][k] = q_full, q_deg
                 dip, pip = pos_cm[r._dip_indices], pos_cm[r._pip_indices]
-                d = tip - dip
+                d = pos_cm[r._axis_indices if r._distal_on_axis else r._tip_indices] - dip
                 d /= np.linalg.norm(d, axis=1, keepdims=True) + 1e-12
                 cos = np.clip(np.sum(d * target_dir, axis=1), -1.0, 1.0)
                 out["dir_err_deg"][k] = np.degrees(np.arccos(cos))
@@ -236,9 +222,11 @@ def serve_viewer(rec, r, res, summary: dict, port: int) -> None:
     import pinocchio as pin
     import viser
 
-    urdf = pathlib.Path(r.urdf_path)
-    desc_parent = next(p for p in urdf.parents if p.name == "orcahand_description").parent
-    model, _, vmodel = pin.buildModelsFromUrdf(str(urdf), package_dirs=[str(desc_parent)])
+    from orca_teleop.utils import urdf_with_local_meshes
+
+    xml = urdf_with_local_meshes(r.urdf_path)
+    model = pin.buildModelFromXML(xml)
+    vmodel = pin.buildGeomFromUrdfString(model, xml, pin.GeometryType.VISUAL)
     if model.nq != r._robot.nq:
         raise SystemExit("viewer model and retargeter model disagree")
     data, vdata = model.createData(), pin.GeometryData(vmodel)
@@ -441,12 +429,6 @@ def main() -> None:
     ap.add_argument(
         "--retarget-config", default=None, help="adaptive_analytical YAML (default: tuned)"
     )
-    ap.add_argument(
-        "--tip-points",
-        default=None,
-        metavar="YAML",
-        help="replace FINGERTIP_OFFSETS with points saved by the tip picker",
-    )
     ap.add_argument("--save-summary", default=None, metavar="JSON", help="write the summary here")
     ap.add_argument("--no-viewer", action="store_true", help="print the summary and exit")
     ap.add_argument("--port", type=int, default=8091)
@@ -459,14 +441,11 @@ def main() -> None:
         backend="adaptive_analytical",
         config_path=args.retarget_config,
     )
-    if args.tip_points:
-        use_tip_points(retargeter, args.tip_points)
     t0 = time.perf_counter()
     res = replay(rec, retargeter)
     print(f"Replayed {len(rec.frame)} frames in {time.perf_counter() - t0:.1f} s")
     summary = summarize(rec, retargeter, res)
     summary["retarget_config"] = args.retarget_config or "default (tuned)"
-    summary["tip_points"] = args.tip_points or "FINGERTIP_OFFSETS"
     summary["urdf"] = retargeter.urdf_path
     print_summary(summary)
     if args.save_summary:

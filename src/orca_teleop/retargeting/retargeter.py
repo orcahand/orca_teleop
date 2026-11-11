@@ -17,7 +17,6 @@ from orca_teleop.retargeting.constants import (
     DEFAULT_LOSS_COEFFS,
     MANO_TO_URDF_TRANSLATION,
 )
-from orca_teleop.retargeting.urdf_offsets import load_ref_offsets
 from orca_teleop.utils import default_urdf_path, infer_model_version
 
 logger = logging.getLogger(__name__)
@@ -101,6 +100,8 @@ class TargetPose:
             raise ValueError(
                 f"TargetPose.joint_positions must have shape (N, 3); got {joints.shape}"
             )
+        if not np.all(np.isfinite(joints)):
+            raise ValueError("TargetPose.joint_positions must be finite")
         joints.setflags(write=False)
         object.__setattr__(self, "joint_positions", joints)
         object.__setattr__(self, "wrist_angle_degrees", float(self.wrist_angle_degrees))
@@ -120,9 +121,8 @@ class RetargeterConfig:
     finger_joint_ids: list[str]
     finger_urdf_joint_ids: list[str]
     finger_reorder_indices: list[int]
-    finger_limits_lower_urdf: torch.Tensor  # URDF-space (physical - ref_offset)
+    finger_limits_lower_urdf: torch.Tensor  # degrees; the model's zero is the hand's
     finger_limits_upper_urdf: torch.Tensor
-    finger_ref_offsets_deg: np.ndarray  # physical_deg - urdf_deg, in finger order
     wrist_joint_id: str
     wrist_urdf_joint_id: str
     wrist_limit_lower: float
@@ -191,13 +191,6 @@ class RetargeterConfig:
 
         wrist_idx = joint_ids.index("wrist") if "wrist" in joint_ids else WRIST_MOTOR_IDX
 
-        # Ref offsets: physical zero pose expressed in URDF radians
-        ref_offsets_dict = load_ref_offsets(str(urdf_path), hand_type) or {}
-        ref_offsets_rad = np.array(
-            [ref_offsets_dict.get(jid, 0.0) for jid in joint_ids], dtype=float
-        )
-        ref_offsets_deg = np.rad2deg(ref_offsets_rad)
-
         # Split wrist from finger joints — wrist is a passthrough, not optimized
         wrist_joint_id = joint_ids[wrist_idx]
         wrist_urdf_joint_id = urdf_joint_ids[wrist_idx]
@@ -209,12 +202,6 @@ class RetargeterConfig:
         finger_upper_phys = np.array(
             [v for i, v in enumerate(physical_upper) if i != wrist_idx], dtype=float
         )
-        finger_ref_deg = np.array(
-            [v for i, v in enumerate(ref_offsets_deg) if i != wrist_idx], dtype=float
-        )
-        # Optimization is in URDF degrees; subtract physical→URDF offset.
-        finger_lower_urdf = finger_lower_phys - finger_ref_deg
-        finger_upper_urdf = finger_upper_phys - finger_ref_deg
 
         urdf_joint_names = chain.get_joint_parameter_names()
         if set(urdf_joint_ids) != set(urdf_joint_names):
@@ -232,18 +219,22 @@ class RetargeterConfig:
         ]
 
         root = torch.zeros(1, 3, device=device)
-        urdfhand_center, urdfhand_rot_matrix, optimization_frames = (
-            retargeter_utils.get_urdf_model_params(chain, hand_type, list(FINGERS), root)
-        )
+        try:
+            urdfhand_center, urdfhand_rot_matrix, optimization_frames = (
+                retargeter_utils.get_urdf_model_params(chain, hand_type, list(FINGERS), root)
+            )
+        except KeyError as err:  # a frame the model doesn't have
+            raise ValueError(
+                f"{urdf_path} has no frame {err}. The rmsprop retargeter needs "
+                "orcahand_description with the <side>_<digit>_tip frames (the v2.1 model, "
+                "on its main)."
+            ) from None
 
         fingertip_offsets = retargeter_utils.get_fingertip_offset_tensors(list(FINGERS), device)
 
-        # URDF key-vector magnitudes at the half-curled neutral pose. Used as
-        # the target scale for autocalibration: mano_scale = urdf_mag / mano_mag.
+        # URDF key-vector magnitudes at the zero pose. Used as the target scale
+        # for autocalibration: mano_scale = urdf_mag / mano_mag.
         neutral_angles = torch.zeros(chain.n_joints, device=device)
-        ref_rad_tensor = torch.tensor(ref_offsets_rad, device=device, dtype=torch.float32)
-        all_reorder_tensor_idx = torch.tensor(all_reorder_indices, device=device, dtype=torch.long)
-        neutral_angles[all_reorder_tensor_idx] = -0.5 * ref_rad_tensor.float()
         with torch.no_grad():
             urdf_fingertips, urdf_palm = retargeter_utils.extract_orca_fingertips_and_palm(
                 chain,
@@ -265,9 +256,8 @@ class RetargeterConfig:
             finger_joint_ids=finger_joint_ids,
             finger_urdf_joint_ids=finger_urdf_joint_ids,
             finger_reorder_indices=finger_reorder_indices,
-            finger_limits_lower_urdf=torch.tensor(finger_lower_urdf, device=device),
-            finger_limits_upper_urdf=torch.tensor(finger_upper_urdf, device=device),
-            finger_ref_offsets_deg=finger_ref_deg,
+            finger_limits_lower_urdf=torch.tensor(finger_lower_phys, device=device),
+            finger_limits_upper_urdf=torch.tensor(finger_upper_phys, device=device),
             wrist_joint_id=wrist_joint_id,
             wrist_urdf_joint_id=wrist_urdf_joint_id,
             wrist_limit_lower=physical_lower[WRIST_MOTOR_IDX],
@@ -295,7 +285,6 @@ class Retargeter:
            magnitudes, then set ``mano_scale`` so MANO ≈ metres
         4. Scale → rotate into URDF base frame → compute key vectors
         5. RMSprop IK (2 steps) in URDF degrees, clamped to URDF-space limits
-        6. Convert to physical degrees by adding the per-joint ref offset
 
     Typical usage::
 
@@ -312,15 +301,12 @@ class Retargeter:
         self._optimizer = torch.optim.RMSprop([self._joint_angles], lr=config.lr)
         self._root = torch.zeros(1, 3, device=config.device)
 
-        # Regularizer zeros are specified in physical degrees; the optimizer
-        # runs in URDF degrees, so subtract the per-joint ref offset.
         n_fingers = len(config.finger_joint_ids)
         self._regularizer_zeros = torch.zeros(n_fingers, device=config.device)
         self._regularizer_weights = torch.zeros(n_fingers, device=config.device)
         for joint_id, zero_val, weight in config.joint_regularizers:
             idx = config.finger_joint_ids.index(joint_id)
-            shifted = zero_val - float(config.finger_ref_offsets_deg[idx])
-            self._regularizer_zeros[idx] = shifted
+            self._regularizer_zeros[idx] = zero_val
             self._regularizer_weights[idx] = weight
         self._regularizer_weights = _normalize_regularizer_weights(self._regularizer_weights)
 
@@ -328,9 +314,6 @@ class Retargeter:
         self._mano_scale: float = 1.0
         self._calibration_mags: list[np.ndarray] = []
         self._calibration_done: bool = False
-
-        # Pre-shape the URDF-to-physical conversion: physical_deg = urdf_deg + ref_deg.
-        self._finger_ref_offsets_deg = config.finger_ref_offsets_deg
 
     @classmethod
     def from_paths(
@@ -426,9 +409,6 @@ class Retargeter:
                 self._joint_angles.zero_()
             self._optimizer = torch.optim.RMSprop([self._joint_angles], lr=cfg.lr)
 
-    def _finger_angles_urdf_to_physical(self, urdf_deg: np.ndarray) -> np.ndarray:
-        return urdf_deg + self._finger_ref_offsets_deg
-
     def retarget(self, target_pose: TargetPose) -> OrcaJointPositions | None:
         """Map a TargetPose to OrcaJointPositions ready to send to the robot.
 
@@ -475,8 +455,8 @@ class Retargeter:
         # Step 5: IK in URDF degrees, clamped to URDF-space limits
         finger_urdf_deg = self._optimize(target_kvs)
 
-        # Step 6: convert to physical degrees and assemble the action
-        finger_phys_deg = self._finger_angles_urdf_to_physical(finger_urdf_deg)
+        # Step 6: assemble the action (the model's joint zero is the hand's)
+        finger_phys_deg = finger_urdf_deg
         wrist_signed = wrist_phys_deg if cfg.hand_type == "left" else -wrist_phys_deg
         return OrcaJointPositions(
             {

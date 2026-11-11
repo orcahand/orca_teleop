@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -18,23 +17,36 @@ from orca_teleop.constants import WRIST_MOTOR_IDX
 from orca_teleop.retargeting import utils as retargeter_utils
 from orca_teleop.retargeting.constants import (
     CALIBRATION_FRAMES,
-    FINGERTIP_OFFSETS,
     MANO_TO_URDF_TRANSLATION,
+    TIP_LANDMARK_OFFSET_M,
 )
 from orca_teleop.retargeting.retargeter import FINGERS, TargetPose
-from orca_teleop.retargeting.urdf_offsets import load_ref_offsets
 from orca_teleop.utils import default_urdf_path, infer_model_version
 
 M_TO_CM = 100.0
 MANO_OFFSET_CM = np.array([0.0, 0.0, 1.5], dtype=np.float64)
-FINGERTIP_OFFSETS_M = {
-    finger: np.array(offset, dtype=np.float64) for finger, offset in FINGERTIP_OFFSETS.items()
-}
 logger = logging.getLogger(__name__)
 
 _MP_TIP_INDICES = np.array([4, 8, 12, 16, 20], dtype=np.int64)
 _MP_PIP_INDICES = np.array([2, 6, 10, 14, 18], dtype=np.int64)
 _MP_DIP_INDICES = np.array([3, 7, 11, 15, 19], dtype=np.int64)
+# The landmarks matched to the robot's (pip, dip) frames and the start of each tip
+# direction. "legacy" matches the fingers' PIP/DIP landmarks to the robot's MCP/PIP
+# joints, one joint too far out. "anatomical" matches MCP/PIP landmarks to MCP/PIP
+# joints, and points the robot's last segment (PIP joint -> tip) like the human's
+# PIP -> TIP, since that one rigid segment spans the human's last two phalanges.
+_LANDMARK_MAPS = {
+    "legacy": (_MP_PIP_INDICES, _MP_DIP_INDICES, _MP_DIP_INDICES),
+    "anatomical": (
+        np.array([2, 5, 9, 13, 17], dtype=np.int64),
+        np.array([3, 6, 10, 14, 18], dtype=np.int64),
+        np.array([3, 6, 10, 14, 18], dtype=np.int64),
+    ),
+}
+_MP_THUMB_CMC = 1
+# Thumb segments whose direction can be matched: CMC->MCP (metacarpal) and MCP->IP (proximal).
+_MP_THUMB_SEGMENTS = np.array([[1, 2], [2, 3]], dtype=np.int64)
+_MAX_PINCH_ALPHA = 0.7
 
 _OPERATOR2MANO_RIGHT = np.array(
     [
@@ -83,6 +95,43 @@ def _huber_loss(x: np.ndarray, delta: float) -> np.ndarray:
 def _huber_grad(x: np.ndarray, delta: float) -> np.ndarray:
     abs_x = np.abs(x)
     return np.where(abs_x <= delta, x, delta * np.sign(x))
+
+
+def _direction_terms(
+    vecs: np.ndarray, j_vecs: np.ndarray, targets: np.ndarray, weights: np.ndarray, delta: float
+) -> tuple[float, np.ndarray]:
+    """Loss and gradient for pointing robot vectors like unit ``targets``.
+
+    ``vecs`` (k, 3) in cm with Jacobians ``j_vecs`` (k, 3, n); each term is
+    ``weight * huber(|unit(vec) - target|)``.
+    """
+    norms = np.linalg.norm(vecs, axis=1) + 1e-8
+    units = vecs / norms[:, None]
+    diffs = units - targets
+    dists = np.linalg.norm(diffs, axis=1)
+    along = diffs / (dists[:, None] + 1e-8)
+    # d|unit - target|/dvec = along @ (I - unit unit^T) / norm
+    through = (along - np.sum(along * units, axis=1, keepdims=True) * units) / norms[:, None]
+    coeff = weights * _huber_grad(dists, delta)
+    grad = np.einsum("k,ki,kij->j", coeff, through, j_vecs)
+    return float(np.sum(weights * _huber_loss(dists, delta))), grad
+
+
+def _pinch_targets(
+    human_vectors_cm: np.ndarray, contact_cm: float, near_cm: float, far_cm: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Thumb-pad to finger-pad target vectors and weights for the four fingers.
+
+    The human's tip landmarks sit inside the fingers, so at contact they are still
+    ``contact_cm`` apart: the target gap is the human's minus that, never below zero,
+    so a human pinch closes the robot's pads. The term weighs 1 up to ``near_cm`` and
+    fades out by ``far_cm``; further apart, shape terms alone place the fingers.
+    """
+    gaps = np.linalg.norm(human_vectors_cm, axis=1)
+    target_gap = np.maximum(gaps - contact_cm, 0.0)
+    targets = human_vectors_cm / (gaps[:, None] + 1e-8) * target_gap[:, None]
+    weights = np.clip((far_cm - gaps) / max(far_cm - near_cm, 1e-8), 0.0, 1.0)
+    return targets, weights
 
 
 def _estimate_mediapipe_frame(keypoints: np.ndarray) -> np.ndarray:
@@ -135,12 +184,120 @@ def _rotation_matrix_xyz(rotation_degrees: dict[str, float]) -> np.ndarray:
     return rot_z @ rot_y @ rot_x
 
 
+def _thumb_shape_from_base(
+    full_hand_vectors: np.ndarray,
+    keypoints: np.ndarray,
+    thumb_scaling: np.ndarray,
+    robot_thumb_base_cm: np.ndarray,
+    weight: float,
+) -> np.ndarray:
+    """Re-anchor the thumb's shape targets (MCP, IP, tip) at the thumb base.
+
+    The full-hand targets are measured from the palm point. The robot's thumb
+    base sits about 2 cm from where the human thumb base lands, so palm-measured
+    thumb targets make the solver over-bend the thumb MCP and bend the IP
+    backwards. Here each thumb target is the human offset from the thumb CMC
+    landmark, applied at the robot's thumb base (``robot_thumb_base_cm``, from
+    the robot palm point). That shifts the whole thumb by the same ~2 cm, which
+    breaks pinches, so ``weight`` blends between the palm-measured target (0)
+    and the base-measured one (1).
+    """
+    vectors = full_hand_vectors.copy()
+    landmarks = (_MP_PIP_INDICES[0], _MP_DIP_INDICES[0], _MP_TIP_INDICES[0])
+    for row, landmark, scale in zip((0, 5, 10), landmarks, thumb_scaling, strict=True):
+        offset = (keypoints[landmark] - keypoints[_MP_THUMB_CMC]) * scale * M_TO_CM
+        vectors[row] += weight * (offset + robot_thumb_base_cm - vectors[row])
+    return vectors
+
+
+def _squeeze_pinches(
+    keypoints: np.ndarray, squeeze_cm: float, full_below_cm: float, start_below_cm: float
+) -> np.ndarray:
+    """Pull the thumb tip and a fingertip together when the human pinches them.
+
+    Copying the human's tip-landmark gap doesn't make the robot's fingertips
+    touch: the landmarks sit inside the fingers, and where the robot's surfaces
+    meet depends on how its fingertips turn. Below ``start_below_cm`` the gap
+    shrinks by up to ``squeeze_cm`` (all of it from ``full_below_cm`` down),
+    split between both tips and never past zero.
+    """
+    out = keypoints.copy()
+    thumb = keypoints[_MP_TIP_INDICES[0]]
+    for tip in _MP_TIP_INDICES[1:]:
+        offset = keypoints[tip] - thumb
+        gap_cm = float(np.linalg.norm(offset)) * M_TO_CM
+        ramp = (start_below_cm - gap_cm) / (start_below_cm - full_below_cm)
+        shift_cm = min(squeeze_cm * float(np.clip(ramp, 0.0, 1.0)), gap_cm)
+        if shift_cm <= 0.0:
+            continue
+        step = offset / np.linalg.norm(offset) * (0.5 * shift_cm / M_TO_CM)
+        out[_MP_TIP_INDICES[0]] += step
+        out[tip] -= step
+    return out
+
+
 @dataclass(frozen=True)
 class _FrameMap:
     palm: str
+    base: list[str]
     pip: list[str]
     dip: list[str]
     tip: list[str]
+    # Point matched to the human TIP landmark, in each tip frame (m).
+    tip_offset: list[np.ndarray]
+    pad: list[str] | None  # where pinches touch; the pinch term needs them
+
+
+class _OneEuroFilter:
+    """One Euro filter (Casiez et al. 2012) on joint targets: smooth when still, quick when moving.
+
+    The cutoff rises from ``min_cutoff_hz`` with the joint's (smoothed) speed in rad/s
+    times ``beta``. Frames are taken ``1 / rate_hz`` apart.
+    """
+
+    def __init__(
+        self, min_cutoff_hz: float, beta: float, d_cutoff_hz: float = 1.0, rate_hz: float = 30.0
+    ) -> None:
+        if min_cutoff_hz <= 0 or d_cutoff_hz <= 0 or rate_hz <= 0 or beta < 0:
+            raise ValueError("one_euro needs positive cutoffs and rate, and beta >= 0")
+        self.min_cutoff_hz, self.beta, self.d_cutoff_hz = min_cutoff_hz, beta, d_cutoff_hz
+        self.dt = 1.0 / rate_hz
+        self._state: np.ndarray | None = None
+        self._speed: np.ndarray | None = None
+
+    def _alpha(self, cutoff_hz: np.ndarray | float) -> np.ndarray | float:
+        tau = 1.0 / (2.0 * math.pi * cutoff_hz)
+        return 1.0 / (1.0 + tau / self.dt)
+
+    def next(self, x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=np.float64)
+        if self._state is None:
+            self._state, self._speed = x.copy(), np.zeros_like(x)
+            return x.copy()
+        speed = (x - self._state) / self.dt
+        self._speed = self._speed + self._alpha(self.d_cutoff_hz) * (speed - self._speed)
+        cutoff = self.min_cutoff_hz + self.beta * np.abs(self._speed)
+        self._state = self._state + self._alpha(cutoff) * (x - self._state)
+        return self._state.copy()
+
+    def reset(self) -> None:
+        self._state = self._speed = None
+
+
+def _make_filter(cfg: dict[str, Any]) -> _LPFilter | _OneEuroFilter:
+    """``filter: {type: one_euro, ...}`` or, by default, the low-pass with ``lp_alpha``."""
+    spec = cfg.get("filter") or {}
+    kind = spec.get("type", "lowpass")
+    if kind == "one_euro":
+        return _OneEuroFilter(
+            float(spec.get("min_cutoff_hz", 1.0)),
+            float(spec.get("beta", 0.5)),
+            float(spec.get("d_cutoff_hz", 1.0)),
+            float(spec.get("rate_hz", 30.0)),
+        )
+    if kind != "lowpass":
+        raise ValueError(f"filter.type must be lowpass or one_euro, got {kind!r}")
+    return _LPFilter(float(cfg.get("lp_alpha", 0.15)))
 
 
 class _LPFilter:
@@ -198,7 +355,7 @@ class AdaptiveAnalyticalRetargeter:
         self._build_frame_indices()
         self._build_retarget_params()
 
-        self._filter = _LPFilter(float(self._retarget_cfg.get("lp_alpha", 0.15)))
+        self._filter = _make_filter(self._retarget_cfg)
         self._neutral_qpos_phys = self._build_neutral_qpos()
         self._build_target_alignment_params()
         self._mano_scale: float = 1.0
@@ -216,10 +373,14 @@ class AdaptiveAnalyticalRetargeter:
         return cls(hand_config_path=model_path, urdf_path=urdf_path, config_path=config_path)
 
     def reset(self) -> None:
-        self._filter.reset()
+        self.reset_tracking()
         self._calibration_mags.clear()
         self._calibration_done = False
         self._mano_scale = 1.0
+
+    def reset_tracking(self) -> None:
+        """Forget the previous pose (filter state, warm start); keep the hand-size calibration."""
+        self._filter.reset()
         self._last_qpos_phys = None
 
     def retarget(self, target_pose: TargetPose) -> OrcaJointPositions | None:
@@ -242,8 +403,11 @@ class AdaptiveAnalyticalRetargeter:
 
         keypoints = self._target_keypoints_in_urdf_frame(normalized)
 
-        qpos_phys = self._solve(keypoints)
-        qpos_phys = self._filter.next(qpos_phys)
+        qpos_phys = self._filter.next(self._solve(keypoints))
+        if not np.all(np.isfinite(qpos_phys)):
+            logger.warning("Retargeter produced a non-finite pose; resetting its state")
+            self.reset_tracking()
+            return None
 
         finger_phys_deg = np.rad2deg(qpos_phys)
         wrist_phys_deg = float(
@@ -278,17 +442,34 @@ class AdaptiveAnalyticalRetargeter:
                 )
             return str(value)
 
+        def read_offset(finger: str) -> np.ndarray:
+            offset = np.asarray(
+                fingers_cfg[finger].get("tip_offset_m", TIP_LANDMARK_OFFSET_M), float
+            )
+            if offset.shape != (3,):
+                raise ValueError(
+                    f"robot_frames.{self.hand_type}.fingers.{finger}.tip_offset_m must be [x, y, z]"
+                )
+            return offset
+
         return _FrameMap(
             palm=str(side_cfg["palm"]),
+            base=[read_frame(finger, "base") for finger in FINGERS],
             pip=[read_frame(finger, "pip") for finger in FINGERS],
             dip=[read_frame(finger, "dip") for finger in FINGERS],
             tip=[read_frame(finger, "tip") for finger in FINGERS],
+            tip_offset=[read_offset(finger) for finger in FINGERS],
+            pad=(
+                [read_frame(finger, "pad") for finger in FINGERS]
+                if all("pad" in fingers_cfg[finger] for finger in FINGERS)
+                else None
+            ),
         )
 
     def _build_joint_mapping(self) -> None:
         joint_ids = list(self._hand.config.joint_ids)
         physical_lower, physical_upper = map(
-            list, zip(*self._hand.config.joint_roms_dict.values(), strict=False)
+            list, zip(*self._hand.config.joint_roms_dict.values(), strict=True)
         )
         wrist_idx = joint_ids.index("wrist") if "wrist" in joint_ids else WRIST_MOTOR_IDX
 
@@ -305,15 +486,6 @@ class AdaptiveAnalyticalRetargeter:
         )
         self._lower_phys = np.deg2rad(lower_deg)
         self._upper_phys = np.deg2rad(upper_deg)
-
-        ref_offsets = load_ref_offsets(self.urdf_path, self.hand_type) or {}
-        self._ref_offsets = np.array(
-            [
-                ref_offsets.get(jid, ref_offsets.get(self._joint_aliases.get(jid, jid), 0.0))
-                for jid in self._finger_joint_ids
-            ],
-            dtype=np.float64,
-        )
 
         model_joint_names = self._robot.dof_joint_names
         self._model_q_indices: list[int] = []
@@ -333,19 +505,22 @@ class AdaptiveAnalyticalRetargeter:
         self._model_q_indices_np = np.array(self._model_q_indices, dtype=np.int64)
 
     def _build_frame_indices(self) -> None:
-        self._base_frame_names = [f"{self.hand_type}_{finger}_mp" for finger in FINGERS]
+        self._base_frame_names = list(self._frame_map.base)
         names = (
             [self._frame_map.palm]
             + self._base_frame_names
             + self._frame_map.tip
             + self._frame_map.pip
             + self._frame_map.dip
+            + (self._frame_map.pad or [])
         )
         self._computed_frame_names = list(dict.fromkeys(names))
         missing = [name for name in self._computed_frame_names if not self._robot.has_frame(name)]
         if missing:
             raise ValueError(
-                f"URDF is missing retarget frames {missing}. Check robot_frames in the config."
+                f"{self.urdf_path} has no frames {missing}. The v2 retarget config needs "
+                "orcahand_description with the <side>_<digit>_tip frames (the v2.1 model, "
+                "on its main); for other models check robot_frames in the config."
             )
 
         self._computed_frame_indices = [
@@ -356,8 +531,8 @@ class AdaptiveAnalyticalRetargeter:
             [self._computed_frame_names.index(name) for name in self._base_frame_names],
             dtype=np.int64,
         )
-        self._thumb_base_index = self._computed_frame_names.index(f"{self.hand_type}_thumb_mp")
-        self._pinky_base_index = self._computed_frame_names.index(f"{self.hand_type}_pinky_mp")
+        self._thumb_base_index = int(self._base_indices[0])
+        self._pinky_base_index = int(self._base_indices[-1])
         self._tip_indices = np.array(
             [self._computed_frame_names.index(name) for name in self._frame_map.tip], dtype=np.int64
         )
@@ -367,10 +542,37 @@ class AdaptiveAnalyticalRetargeter:
         self._dip_indices = np.array(
             [self._computed_frame_names.index(name) for name in self._frame_map.dip], dtype=np.int64
         )
+        self._pad_indices = (
+            np.array(
+                [self._computed_frame_names.index(n) for n in self._frame_map.pad], dtype=np.int64
+            )
+            if self._frame_map.pad
+            else self._tip_indices
+        )
         self._frame_offsets = [np.zeros(3, dtype=np.float64) for _ in self._computed_frame_names]
-        for finger, frame_name in zip(FINGERS, self._frame_map.tip, strict=True):
-            frame_idx = self._computed_frame_names.index(frame_name)
-            self._frame_offsets[frame_idx] = FINGERTIP_OFFSETS_M[finger]
+        for offset, frame_idx in zip(self._frame_map.tip_offset, self._tip_indices, strict=True):
+            self._frame_offsets[frame_idx] = offset
+
+        # Each last segment's axis point: on the dip frame's z axis (the segment's own
+        # axis), as far out as the tip point. The tip point sits on the skin, off that axis
+        # (about 1 cm towards the palm on v2 fingers), so a straight robot finger "points"
+        # PIP -> tip some 13 degrees palmwards; matching a straight human finger with that
+        # vector bends the robot's PIP backwards. Directions use the axis point instead.
+        zero = np.zeros(self._robot.nq, dtype=np.float64)
+        positions, _ = self._robot.compute_positions_and_jacobians(
+            zero, self._computed_frame_indices, self._frame_offsets
+        )
+        rotations = [
+            self._robot.frame_rotation(self._computed_frame_indices[i]) for i in self._dip_indices
+        ]
+        self._axis_indices = []
+        for rotation, dip, tip in zip(rotations, self._dip_indices, self._tip_indices, strict=True):
+            reach = float((rotation.T @ (positions[tip] - positions[dip]))[2])
+            self._axis_indices.append(len(self._computed_frame_indices))
+            self._computed_frame_indices.append(self._computed_frame_indices[dip])
+            self._computed_frame_names.append(f"{self._computed_frame_names[dip]}+axis")
+            self._frame_offsets.append(np.array([0.0, 0.0, reach]))
+        self._axis_indices = np.array(self._axis_indices, dtype=np.int64)
 
     def _build_retarget_params(self) -> None:
         cfg = self._retarget_cfg
@@ -381,6 +583,7 @@ class AdaptiveAnalyticalRetargeter:
         self._w_dir = float(cfg.get("w_dir", 10.0))
         self._w_full_hand = float(cfg.get("w_full_hand", 1.0))
         self._scaling = float(cfg.get("scaling", 1.0))
+        self._thumb_shape_from_base = bool(cfg.get("thumb_shape_from_base", False))
 
         # Per-finger tip-direction weight applied outside the pinch blend, which is
         # zero unless pinching and so leaves distal joints unconstrained in orientation.
@@ -398,6 +601,43 @@ class AdaptiveAnalyticalRetargeter:
             if values.shape != (3,):
                 raise ValueError(f"segment_scaling.{finger} must be a length-3 list")
             self._segment_scaling[i] = values
+
+        # Direction weights for the thumb's metacarpal and proximal segments. Position
+        # targets alone leave the base joints (cmc, abd) free to make up for the
+        # robot's thumb base sitting ~2 cm from where the human's lands.
+        thumb_dir_cfg = cfg.get("w_thumb_segment_dir", {})
+        self._w_thumb_segment_dir = np.array(
+            [float(thumb_dir_cfg.get(k, 0.0)) for k in ("metacarpal", "proximal")]
+        )
+        # The same for the four fingers: proximal (MCP -> PIP joint) and distal
+        # (PIP joint -> tip) segments, matched to the human's MCP->PIP and PIP->TIP.
+        finger_dir_cfg = cfg.get("w_finger_segment_dir", {})
+        self._w_finger_segment_dir = np.array(
+            [float(finger_dir_cfg.get(k, 0.0)) for k in ("proximal", "distal")]
+        )
+
+        landmarks = str(cfg.get("finger_landmarks", "legacy"))
+        if landmarks not in _LANDMARK_MAPS:
+            raise ValueError(f"finger_landmarks must be one of {sorted(_LANDMARK_MAPS)}")
+        self._lm_pip, self._lm_dip, self._lm_dir_from = _LANDMARK_MAPS[landmarks]
+        full_hand_cfg = cfg.get("full_hand_weights", [1.0, 1.0, 1.0])
+        self._full_hand_weights = np.asarray(full_hand_cfg, dtype=np.float64)
+        if self._full_hand_weights.shape != (3,):
+            raise ValueError("full_hand_weights must be [pip, dip, tip]")
+
+        self._distal_on_axis = str(cfg.get("distal_direction", "tip")) == "axis"
+
+        pinch = cfg.get("pinch", {})
+        self._pinch_weight = float(pinch.get("weight", 0.0))
+        self._pinch_contact_cm = float(pinch.get("contact_cm", 1.5))
+        self._pinch_near_cm = float(pinch.get("near_cm", 3.0))
+        self._pinch_far_cm = float(pinch.get("far_cm", 5.0))
+        self._pinch_delta_cm = float(pinch.get("huber_delta_cm", 1.0))
+
+        squeeze_cfg = cfg.get("pinch_squeeze", {})
+        self._pinch_squeeze_cm = float(squeeze_cfg.get("cm", 0.0))
+        self._pinch_squeeze_full_below_cm = float(squeeze_cfg.get("full_below_cm", 1.5))
+        self._pinch_squeeze_start_below_cm = float(squeeze_cfg.get("start_below_cm", 2.5))
 
         pinch_cfg = cfg.get("pinch_thresholds_cm", {})
         self._pinch_d1 = np.array(
@@ -422,8 +662,8 @@ class AdaptiveAnalyticalRetargeter:
             self._frame_offsets,
         )
         base_pos = {
-            finger: positions[self._computed_frame_names.index(f"{self.hand_type}_{finger}_mp")]
-            for finger in FINGERS
+            finger: positions[index]
+            for finger, index in zip(FINGERS, self._base_indices, strict=True)
         }
         palm_pos = positions[self._palm_index]
         center, rot_matrix = retargeter_utils.get_hand_center_and_rotation(
@@ -444,6 +684,7 @@ class AdaptiveAnalyticalRetargeter:
         )
         tip_pos = neutral_positions[self._tip_indices]
         palm = self._robot_palm_from_positions(neutral_positions)
+        self._robot_thumb_base_cm = (neutral_positions[self._thumb_base_index] - palm) * M_TO_CM
         urdf_keyvectors = tip_pos - palm
         self._urdf_keyvector_mags = 0.9 * np.linalg.norm(urdf_keyvectors, axis=1)
 
@@ -475,18 +716,26 @@ class AdaptiveAnalyticalRetargeter:
         self._last_qpos_phys = None
         self._filter.reset()
         logger.info(
-            "Adaptive retargeter auto-scale calibrated: mano_scale=%.4f " "(per-finger ratios=%s)",
+            "Adaptive retargeter auto-scale calibrated: mano_scale=%.4f (per-finger ratios=%s)",
             self._mano_scale,
             np.round(ratios, 3).tolist(),
         )
 
     def _target_keypoints_in_urdf_frame(self, normalized_joints: np.ndarray) -> np.ndarray:
         scaled = normalized_joints * self._mano_scale
-        return (
+        keypoints = (
             scaled @ self._urdfhand_rot_matrix.T
             + self._urdfhand_center
             + np.array(MANO_TO_URDF_TRANSLATION)
         )
+        if self._pinch_squeeze_cm > 0.0:
+            keypoints = _squeeze_pinches(
+                keypoints,
+                self._pinch_squeeze_cm,
+                self._pinch_squeeze_full_below_cm,
+                self._pinch_squeeze_start_below_cm,
+            )
+        return keypoints
 
     def _solve(self, keypoints: np.ndarray) -> np.ndarray:
         init_qpos = self._initial_qpos()
@@ -496,6 +745,27 @@ class AdaptiveAnalyticalRetargeter:
         target_tip_vectors = self._compute_tip_vectors(keypoints)
         target_tip_dirs = self._compute_tip_dirs(keypoints)
         target_full_hand_vectors = self._compute_full_hand_vectors(keypoints)
+        thumb_vectors = keypoints[_MP_THUMB_SEGMENTS[:, 1]] - keypoints[_MP_THUMB_SEGMENTS[:, 0]]
+        target_thumb_dirs = thumb_vectors / (
+            np.linalg.norm(thumb_vectors, axis=1, keepdims=True) + 1e-8
+        )
+        finger_vectors = np.stack(
+            [
+                keypoints[self._lm_dip[1:]] - keypoints[self._lm_pip[1:]],  # proximal
+                keypoints[_MP_TIP_INDICES[1:]] - keypoints[self._lm_dip[1:]],  # distal
+            ]
+        )
+        target_finger_dirs = finger_vectors / (
+            np.linalg.norm(finger_vectors, axis=2, keepdims=True) + 1e-8
+        )
+        human_pinch = (
+            (keypoints[_MP_TIP_INDICES[1:]] - keypoints[_MP_TIP_INDICES[0]])
+            * self._scaling
+            * M_TO_CM
+        )
+        pinch_targets, pinch_weights = _pinch_targets(
+            human_pinch, self._pinch_contact_cm, self._pinch_near_cm, self._pinch_far_cm
+        )
 
         opt = self._nlopt.opt(self._nlopt.LD_SLSQP, len(self._finger_joint_ids))
         opt.set_maxeval(int(self._retarget_cfg.get("maxeval", 50)))
@@ -509,8 +779,12 @@ class AdaptiveAnalyticalRetargeter:
                 target_tip_vectors,
                 target_tip_dirs,
                 target_full_hand_vectors,
+                target_thumb_dirs,
                 alphas,
                 reg_qpos,
+                target_finger_dirs,
+                pinch_targets,
+                pinch_weights * self._pinch_weight,
             )
             if grad_out.size > 0:
                 grad_out[:] = grad
@@ -519,8 +793,8 @@ class AdaptiveAnalyticalRetargeter:
         opt.set_min_objective(objective)
         try:
             result = np.asarray(opt.optimize(init_qpos.tolist()), dtype=np.float64)
-        except RuntimeError:
-            result = init_qpos
+        except (RuntimeError, self._nlopt.RoundoffLimited, self._nlopt.ForcedStop):
+            result = init_qpos  # nlopt's own errors aren't RuntimeErrors; keep the last pose
         result = np.clip(result, self._lower_phys, self._upper_phys)
         self._last_qpos_phys = result.copy()
         return result
@@ -545,7 +819,7 @@ class AdaptiveAnalyticalRetargeter:
 
     def _full_model_qpos(self, qpos_phys: np.ndarray) -> np.ndarray:
         qpos = np.zeros(self._robot.nq, dtype=np.float64)
-        qpos[self._model_q_indices_np] = qpos_phys - self._ref_offsets
+        qpos[self._model_q_indices_np] = qpos_phys
         return qpos
 
     def _compute_pinch_alpha(self, keypoints: np.ndarray) -> np.ndarray:
@@ -555,7 +829,7 @@ class AdaptiveAnalyticalRetargeter:
         alphas_4 = np.clip(
             (self._pinch_d2 - distances) / (self._pinch_d2 - self._pinch_d1 + 1e-8),
             0.0,
-            0.7,
+            _MAX_PINCH_ALPHA,
         )
         return np.concatenate([[float(np.max(alphas_4))], alphas_4])
 
@@ -567,16 +841,24 @@ class AdaptiveAnalyticalRetargeter:
         return ((keypoints[_MP_TIP_INDICES] - palm) * self._scaling * M_TO_CM).astype(np.float64)
 
     def _compute_tip_dirs(self, keypoints: np.ndarray) -> np.ndarray:
-        vectors = keypoints[_MP_TIP_INDICES] - keypoints[_MP_DIP_INDICES]
+        vectors = keypoints[_MP_TIP_INDICES] - keypoints[self._lm_dir_from]
         norms = np.linalg.norm(vectors, axis=1, keepdims=True)
         return vectors / (norms + 1e-8)
 
     def _compute_full_hand_vectors(self, keypoints: np.ndarray) -> np.ndarray:
         palm = self._target_palm(keypoints)
-        pip_vectors = (keypoints[_MP_PIP_INDICES] - palm) * self._segment_scaling[:, 0:1]
-        dip_vectors = (keypoints[_MP_DIP_INDICES] - palm) * self._segment_scaling[:, 1:2]
+        pip_vectors = (keypoints[self._lm_pip] - palm) * self._segment_scaling[:, 0:1]
+        dip_vectors = (keypoints[self._lm_dip] - palm) * self._segment_scaling[:, 1:2]
         tip_vectors = (keypoints[_MP_TIP_INDICES] - palm) * self._segment_scaling[:, 2:3]
-        return np.vstack([pip_vectors, dip_vectors, tip_vectors]) * M_TO_CM
+        vectors = np.vstack([pip_vectors, dip_vectors, tip_vectors]) * M_TO_CM
+        if self._thumb_shape_from_base:
+            # Fade back to the palm-measured targets as the thumb nears a finger, so
+            # pinches land as before.
+            weight = 1.0 - self._compute_pinch_alpha(keypoints)[0] / _MAX_PINCH_ALPHA
+            vectors = _thumb_shape_from_base(
+                vectors, keypoints, self._segment_scaling[0], self._robot_thumb_base_cm, weight
+            )
+        return vectors
 
     def _robot_palm_from_positions(self, positions_m: np.ndarray) -> np.ndarray:
         return (
@@ -596,8 +878,12 @@ class AdaptiveAnalyticalRetargeter:
         target_tip_vectors: np.ndarray,
         target_tip_dirs: np.ndarray,
         target_full_hand_vectors: np.ndarray,
+        target_thumb_dirs: np.ndarray,
         alphas: np.ndarray,
         reg_qpos: np.ndarray | None,
+        target_finger_dirs: np.ndarray | None = None,
+        pinch_targets: np.ndarray | None = None,
+        pinch_weights: np.ndarray | None = None,
     ) -> tuple[float, np.ndarray]:
         qpos_full = self._full_model_qpos(qpos_phys)
         positions, jacobians = self._robot.compute_positions_and_jacobians(
@@ -627,26 +913,19 @@ class AdaptiveAnalyticalRetargeter:
         grad_pos = _huber_grad(dist_pos, self._huber_delta)
         diff_normed_pos = diff_pos / (dist_pos[:, None] + 1e-8)
 
-        for i in range(len(FINGERS)):
-            j_diff = j_tip[i] - j_palm
-            total_grad += alphas[i] * self._w_pos * grad_pos[i] * (diff_normed_pos[i] @ j_diff)
+        coeff = alphas * self._w_pos * grad_pos
+        total_grad += np.einsum("k,ki,kij->j", coeff, diff_normed_pos, j_tip - j_palm)
 
-        robot_tip_dir_vec = tip_pos - dip_pos
-        robot_tip_dir_norm = np.linalg.norm(robot_tip_dir_vec, axis=1, keepdims=True)
-        robot_tip_dirs = robot_tip_dir_vec / (robot_tip_dir_norm + 1e-8)
-        diff_dir = robot_tip_dirs - target_tip_dirs
-        dist_dir = np.linalg.norm(diff_dir, axis=1)
-        loss_tip_dir = _huber_loss(dist_dir, self._huber_delta_dir)
-        grad_dir = _huber_grad(dist_dir, self._huber_delta_dir)
-        diff_normed_dir = diff_dir / (dist_dir[:, None] + 1e-8)
-
-        for i in range(len(FINGERS)):
-            unit_dir = robot_tip_dirs[i]
-            norm = robot_tip_dir_norm[i, 0]
-            j_norm = (np.eye(3) - np.outer(unit_dir, unit_dir)) / (norm + 1e-8)
-            j_diff = j_tip[i] - j_dip[i]
-            dir_weight = alphas[i] * self._w_dir + self._w_dir_unblended[i]
-            total_grad += dir_weight * grad_dir[i] * (diff_normed_dir[i] @ j_norm @ j_diff)
+        # Last segment's direction: blended with the pinch alpha, plus an unblended part.
+        distal = self._axis_indices if self._distal_on_axis else self._tip_indices
+        loss_tip_dir, grad_tip_dir = _direction_terms(
+            positions_cm[distal] - dip_pos,
+            jacobians_cm[distal] - j_dip,
+            target_tip_dirs,
+            alphas * self._w_dir + self._w_dir_unblended,
+            self._huber_delta_dir,
+        )
+        total_grad += grad_tip_dir
 
         target_pip = target_full_hand_vectors[:5]
         target_dip = target_full_hand_vectors[5:10]
@@ -663,7 +942,6 @@ class AdaptiveAnalyticalRetargeter:
         loss_pip = _huber_loss(dist_pip, self._huber_delta)
         loss_dip = _huber_loss(dist_dip, self._huber_delta)
         loss_tip_full = _huber_loss(dist_tip, self._huber_delta)
-        loss_full_hand = (loss_pip + loss_dip + loss_tip_full) / 3.0
 
         grad_pip = _huber_grad(dist_pip, self._huber_delta)
         grad_dip = _huber_grad(dist_dip, self._huber_delta)
@@ -673,17 +951,73 @@ class AdaptiveAnalyticalRetargeter:
         diff_normed_dip = diff_dip / (dist_dip[:, None] + 1e-8)
         diff_normed_tip = diff_tip / (dist_tip[:, None] + 1e-8)
 
-        for i in range(len(FINGERS)):
-            grad_coeff = (1.0 - alphas[i]) * self._w_full_hand / 3.0
-            total_grad += grad_coeff * grad_pip[i] * (diff_normed_pip[i] @ (j_pip[i] - j_palm))
-            total_grad += grad_coeff * grad_dip[i] * (diff_normed_dip[i] @ (j_dip[i] - j_palm))
-            total_grad += grad_coeff * grad_tip_full[i] * (diff_normed_tip[i] @ (j_tip[i] - j_palm))
+        w_pip, w_dip, w_tip = self._full_hand_weights
+        loss_full_hand = (w_pip * loss_pip + w_dip * loss_dip + w_tip * loss_tip_full) / 3.0
+        grad_coeff = (1.0 - alphas) * self._w_full_hand / 3.0
+        total_grad += np.einsum(
+            "k,ki,kij->j", grad_coeff * w_pip * grad_pip, diff_normed_pip, j_pip - j_palm
+        )
+        total_grad += np.einsum(
+            "k,ki,kij->j", grad_coeff * w_dip * grad_dip, diff_normed_dip, j_dip - j_palm
+        )
+        total_grad += np.einsum(
+            "k,ki,kij->j", grad_coeff * w_tip * grad_tip_full, diff_normed_tip, j_tip - j_palm
+        )
 
-        loss_tip_dir_vec = self._w_pos * loss_tip_pos + self._w_dir * loss_tip_dir
         loss_full = self._w_full_hand * loss_full_hand
-        total_loss = float(np.sum(alphas * loss_tip_dir_vec + (1.0 - alphas) * loss_full))
+        total_loss = float(np.sum(alphas * self._w_pos * loss_tip_pos + (1.0 - alphas) * loss_full))
+        total_loss += loss_tip_dir
 
-        total_loss += float(np.sum(self._w_dir_unblended * loss_tip_dir))
+        thumb_segments = (
+            (self._thumb_base_index, self._pip_indices[0]),
+            (self._pip_indices[0], self._dip_indices[0]),
+        )
+        # Segment directions: the thumb's metacarpal and proximal, the fingers' proximal
+        # and distal. Each gives way to a pinch, like the full-hand targets.
+        starts, ends, targets, weights = [], [], [], []
+        for weight, (start, end), target in zip(
+            self._w_thumb_segment_dir, thumb_segments, target_thumb_dirs, strict=True
+        ):
+            if weight != 0.0:
+                starts.append(start), ends.append(end), targets.append(target)
+                weights.append(weight * (1.0 - alphas[0]))
+        if target_finger_dirs is not None:
+            finger_segments = (
+                (self._pip_indices[1:], self._dip_indices[1:]),
+                (self._dip_indices[1:], distal[1:]),
+            )
+            for weight, (seg_starts, seg_ends), seg_targets in zip(
+                self._w_finger_segment_dir, finger_segments, target_finger_dirs, strict=True
+            ):
+                if weight != 0.0:
+                    starts.extend(seg_starts), ends.extend(seg_ends), targets.extend(seg_targets)
+                    weights.extend(weight * (1.0 - alphas[1:]))
+        if starts:
+            loss, grad = _direction_terms(
+                positions_cm[ends] - positions_cm[starts],
+                jacobians_cm[ends] - jacobians_cm[starts],
+                np.asarray(targets),
+                np.asarray(weights),
+                self._huber_delta_dir,
+            )
+            total_loss += loss
+            total_grad += grad
+
+        if pinch_weights is not None and np.any(pinch_weights > 0.0):
+            on = np.flatnonzero(pinch_weights > 0.0)
+            thumb_pad = self._pad_indices[0]
+            pads = self._pad_indices[1:][on]
+            w = pinch_weights[on]
+            diff = positions_cm[pads] - positions_cm[thumb_pad] - pinch_targets[on]
+            dist = np.linalg.norm(diff, axis=1)
+            total_loss += float(np.sum(w * _huber_loss(dist, self._pinch_delta_cm)))
+            coeff = w * _huber_grad(dist, self._pinch_delta_cm)
+            total_grad += np.einsum(
+                "k,ki,kij->j",
+                coeff,
+                diff / (dist[:, None] + 1e-8),
+                jacobians_cm[pads] - jacobians_cm[thumb_pad],
+            )
 
         if reg_qpos is not None:
             diff_reg = qpos_phys - reg_qpos
@@ -698,6 +1032,8 @@ class _PinocchioOrcaRobot:
         self._pin = pin_module
         self.model = self._pin.buildModelFromUrdf(urdf_path)
         self.data = self.model.createData()
+        self._plan_key: tuple | None = None
+        self._plan_value: tuple | None = None
         if self.model.nq != self.model.nv:
             raise NotImplementedError("Adaptive analytical backend requires one-DoF joints only")
 
@@ -712,6 +1048,11 @@ class _PinocchioOrcaRobot:
     def has_frame(self, name: str) -> bool:
         return self.model.getFrameId(name) < self.model.nframes
 
+    def frame_rotation(self, frame_index: int) -> np.ndarray:
+        """World rotation of a frame after the last ``compute_positions_and_jacobians``."""
+        self._pin.updateFramePlacements(self.model, self.data)
+        return np.array(self.data.oMf[frame_index].rotation)
+
     def get_frame_index(self, name: str) -> int:
         idx = self.model.getFrameId(name)
         if idx >= self.model.nframes:
@@ -724,28 +1065,54 @@ class _PinocchioOrcaRobot:
         frame_indices: list[int],
         frame_offsets: list[np.ndarray] | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
+        """World positions (n, 3) of the frames' points and their linear Jacobians (n, 3, nv).
+
+        One C++ pass (``computeJointJacobians`` also runs the forward kinematics), then
+        numpy: a point p fixed to joint j's subtree moves at ``v_j + w_j x p`` per unit of
+        each supporting joint's velocity (``data.J`` is in the world frame). Assumes each
+        joint's columns of ``data.J`` are its own motion: no mimic joints in the model.
+        """
         qpos = np.asarray(qpos, dtype=np.float64)
-        self._pin.forwardKinematics(self.model, self.data, qpos)
         self._pin.computeJointJacobians(self.model, self.data, qpos)
-        self._pin.updateFramePlacements(self.model, self.data)
+        n = len(frame_indices)
         if frame_offsets is None:
             frame_offsets = [np.zeros(3, dtype=np.float64) for _ in frame_indices]
+        # Rebuilt only when the frame list or offsets change (the solver repeats them).
+        key = (tuple(frame_indices), np.asarray(frame_offsets, dtype=np.float64).tobytes())
+        if key != self._plan_key:
+            self._plan_key, self._plan_value = key, self._plan(frame_indices, frame_offsets)
+        joints, which, local, mask = self._plan_value
+        rot = np.empty((len(joints), 3, 3))
+        trans = np.empty((len(joints), 3))
+        for k, j in enumerate(joints):
+            placement = self.data.oMi[j]
+            rot[k] = placement.rotation
+            trans[k] = placement.translation
+        positions = np.einsum("nij,nj->ni", rot[which], local) + trans[which]
+        jac = np.asarray(self.data.J)  # (6, nv): linear velocity at the world origin, angular
+        lin, ang = jac[:3], jac[3:]
+        cross = np.empty((n, 3, lin.shape[1]))
+        px, py, pz = positions[:, 0:1], positions[:, 1:2], positions[:, 2:3]
+        cross[:, 0] = ang[1] * pz - ang[2] * py
+        cross[:, 1] = ang[2] * px - ang[0] * pz
+        cross[:, 2] = ang[0] * py - ang[1] * px
+        jacobians = (lin[None] + cross) * mask[:, None, :]
+        return positions, jacobians
 
-        positions = []
-        jacobians = []
-        for idx, offset in zip(frame_indices, frame_offsets, strict=True):
-            offset = np.asarray(offset, dtype=np.float64)
-            placement = self.data.oMf[idx]
-            positions.append(placement.translation + placement.rotation @ offset)
-            j_local = self._pin.getFrameJacobian(self.model, self.data, idx, self._pin.LOCAL)
-            linear_local = j_local[:3, :]
-            angular_local = j_local[3:, :]
-            offset_linear_local = (
-                linear_local
-                + np.cross(
-                    angular_local.T,
-                    offset,
-                ).T
-            )
-            jacobians.append(placement.rotation @ offset_linear_local)
-        return np.stack(positions, axis=0), np.stack(jacobians, axis=0)
+    def _plan(self, frame_indices, frame_offsets):
+        """Per frame list: parent joints, each point in its parent joint's frame, support mask."""
+        parents = [int(self.model.frames[i].parentJoint) for i in frame_indices]
+        joints = sorted(set(parents))
+        which = np.array([joints.index(p) for p in parents], dtype=np.int64)
+        local = np.empty((len(frame_indices), 3))
+        mask = np.zeros((len(frame_indices), self.model.nv))
+        for k, (idx, offset, parent) in enumerate(
+            zip(frame_indices, frame_offsets, parents, strict=True)
+        ):
+            placement = self.model.frames[idx].placement
+            local[k] = placement.translation + placement.rotation @ np.asarray(offset, float)
+            for j in self.model.supports[parent]:
+                if self.model.nvs[j] > 0:
+                    start = self.model.idx_vs[j]
+                    mask[k, start : start + self.model.nvs[j]] = 1.0
+        return joints, which, local, mask
