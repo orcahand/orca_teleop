@@ -9,6 +9,7 @@ hand, and ``orca-teleop-urdf`` the same pipeline into a kinematic viewer.
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import logging
 
 from orca_teleop.ingress.server import DEFAULT_PORT
@@ -20,9 +21,7 @@ logger = logging.getLogger("orca_teleop")
 def _common_parser(description: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--model_path", default=None, help="OrcaHand model config")
-    parser.add_argument(
-        "--urdf_path", default=None, help="Hand URDF the retargeter solves against"
-    )
+    parser.add_argument("--urdf_path", default=None, help="Hand URDF the retargeter solves against")
     parser.add_argument(
         "--port", type=int, default=DEFAULT_PORT, help=f"gRPC port (default: {DEFAULT_PORT})"
     )
@@ -44,6 +43,12 @@ def _common_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument("--show-video", action="store_true", help="Show the webcam feed")
     parser.add_argument(
         "--camera-index", type=int, default=0, help="OpenCV camera index (default: 0)"
+    )
+    parser.add_argument(
+        "--record",
+        default=None,
+        metavar="DIR",
+        help="Record the webcam session (raw frames + landmarks) into DIR for offline replay",
     )
     parser.add_argument(
         "--retargeter",
@@ -77,9 +82,17 @@ def _launch(args, sink, handedness: str) -> None:
         retargeter_backend=args.retargeter,
         retargeter_config_path=args.retarget_config,
     )
+    if args.record and not args.local:
+        raise SystemExit("--record records the local webcam publisher; drop --no-local")
     if args.local:
-        run_local(handedness=handedness, confidence=args.confidence,
-                  show_video=args.show_video, camera_index=args.camera_index, **common)
+        run_local(
+            handedness=handedness,
+            confidence=args.confidence,
+            show_video=args.show_video,
+            camera_index=args.camera_index,
+            record_dir=args.record,
+            **common,
+        )
     else:
         run(**common)
 
@@ -100,13 +113,44 @@ def teleop_hand(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Run the full stack but never connect or dispatch to the motors",
     )
+    parser.add_argument(
+        "--viewer",
+        action="store_true",
+        help="Also show the hand model in the browser: commanded and measured pose (needs viser)",
+    )
+    parser.add_argument(
+        "--viewer-port", type=int, default=8098, help="Viewer web page port (default: 8098)"
+    )
+    parser.add_argument(
+        "--readback-hz",
+        type=float,
+        default=10.0,
+        help="Motor position reads per second for the viewer and log (default: 10; 0 = none)",
+    )
+    parser.add_argument(
+        "--log-joints",
+        default=None,
+        metavar="FILE",
+        help="Log commanded and measured joints with timestamps (JSON lines) for lag analysis",
+    )
+    parser.add_argument(
+        "--log-current",
+        action="store_true",
+        help="With --log-joints, also log motor currents and velocities (a second read, ~4 ms)",
+    )
     args = parser.parse_args(argv)
+    if args.log_current and not args.log_joints:
+        parser.error("--log-current needs --log-joints FILE to log into")
     _configure_logging(args.log_level)
+    logger.info("orca_core %s", importlib.metadata.version("orca_core"))
 
     sink = OrcaHandSink(
         model_path=args.model_path,
         connect_hardware=not args.dry_run,
         move_to_neutral=args.home,
+        readback_hz=args.readback_hz,
+        joint_log=args.log_joints,
+        log_current=args.log_current,
     )
     handedness = args.hand or sink.handedness
     if handedness != sink.handedness:
@@ -114,9 +158,22 @@ def teleop_hand(argv: list[str] | None = None) -> None:
             f"Model is a {sink.handedness} hand but --hand is {handedness}; "
             "the publisher would track the wrong hand."
         )
+    viewer = None
+    if args.viewer:
+        from orca_teleop.hand_viewer import HandViewer
+        from orca_teleop.utils import default_urdf_path, infer_model_version
+
+        urdf = args.urdf_path or default_urdf_path(handedness, infer_model_version(args.model_path))
+        viewer = HandViewer(urdf, handedness, sink.joint_ids, port=args.viewer_port)
+        sink.viewer = viewer
+        logger.info("Viewer: open %s", viewer.url)
     if not args.dry_run and not args.home:
         logger.info("Hand is not pre-positioned; it holds its pose until the first frame")
-    _launch(args, sink, handedness)
+    try:
+        _launch(args, sink, handedness)
+    finally:
+        if viewer is not None:
+            viewer.close()
 
 
 def teleop_urdf(argv: list[str] | None = None) -> None:

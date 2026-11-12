@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from orca_teleop.retargeting.constants import FINGERTIP_OFFSETS
+from orca_teleop.retargeting.constants import TIP_LANDMARK_OFFSET_M
 
 MANO_OFFSET = torch.tensor([0, 0, 0.015])
 
@@ -43,16 +43,22 @@ def get_hand_center_and_rotation(
 
 
 def get_fingertip_urdf_name(hand_type: str, finger: str) -> str:
-    return f"{hand_type}_{finger}_fingertip"
+    """The v2 model's fingertip frame: on the skin at the end of the fingertip."""
+    return f"{hand_type}_{finger}_tip"
 
 
 def get_finger_base_urdf_name(hand_type: str, finger: str) -> str:
-    return f"{hand_type}_{finger}_mp"
+    """The part that turns at the finger's first joint (spread; thumb: CMC)."""
+    return f"{hand_type}_thumb_tp" if finger == "thumb" else f"{hand_type}_{finger}_ap"
+
+
+def get_palm_urdf_name(hand_type: str) -> str:
+    return f"{hand_type}_carpals"
 
 
 def get_fingertip_offset_tensors(fingers: list[str], device: str) -> dict[str, torch.Tensor]:
-    """Per-finger empirical offsets (m) from URDF link end to fleshy fingertip."""
-    return {f: torch.tensor([list(FINGERTIP_OFFSETS[f])], device=device) for f in fingers}
+    """The point matched to MediaPipe's TIP landmark, in each fingertip frame (m)."""
+    return {f: torch.tensor([list(TIP_LANDMARK_OFFSET_M)], device=device) for f in fingers}
 
 
 def get_keyvectors(fingertips: dict[str, torch.Tensor], palm: torch.Tensor) -> list[torch.Tensor]:
@@ -77,9 +83,8 @@ def extract_orca_fingertips_and_palm(
 ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
     """Run FK and return fingertip positions and palm for the Orca Hand.
 
-    If *fingertip_offsets* is provided, each finger's tip is the URDF link end
-    transformed by that finger's offset point — bringing the FK fingertip out
-    to where the fleshy tip actually sits.
+    If *fingertip_offsets* is provided, each finger's tip is that point in the
+    finger's tip frame instead of the frame's origin.
     """
     chain_transforms = chain.forward_kinematics(
         urdfhand_joint_angles, frame_indices=optimization_frames
@@ -122,7 +127,7 @@ def get_urdf_model_params(
         .numpy()
         for finger in fingers
     }
-    wrist_pos = transforms[f"{hand_type}_palm"].transform_points(root_point).cpu().numpy()
+    wrist_pos = transforms[get_palm_urdf_name(hand_type)].transform_points(root_point).cpu().numpy()
     center, rot_matrix = get_hand_center_and_rotation(**finger_base_positions, wrist=wrist_pos)
 
     urdf_frame_names = [

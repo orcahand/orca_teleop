@@ -37,8 +37,26 @@ class HandLandmarks:
 
     keypoints: np.ndarray  # (21, 3) float32, wrist-relative, meters
     handedness: Literal["left", "right"]
-    timestamp_ns: int
+    timestamp_ns: int  # capture time on the publisher's clock
     wrist_angle_degrees: float = 0.0
+
+
+# A real hand: wrist to middle-finger knuckle 3-25 cm, every point within 40 cm of the
+# wrist. Generous on purpose; only broken frames fall outside.
+_PALM_LENGTH_RANGE_M = (0.03, 0.25)
+_MAX_REACH_M = 0.4
+
+
+def landmark_problem(keypoints: np.ndarray, wrist_angle_degrees: float = 0.0) -> str | None:
+    """Why a frame can't be a hand ("non-finite", "palm size", "out of reach"), or None."""
+    if not (np.all(np.isfinite(keypoints)) and np.isfinite(wrist_angle_degrees)):
+        return "non-finite"
+    palm_length = float(np.linalg.norm(keypoints[9] - keypoints[0]))
+    if not _PALM_LENGTH_RANGE_M[0] <= palm_length <= _PALM_LENGTH_RANGE_M[1]:
+        return "palm size"
+    if float(np.max(np.linalg.norm(keypoints - keypoints[0], axis=1))) > _MAX_REACH_M:
+        return "out of reach"
+    return None
 
 
 class _HandStreamServicer(hand_stream_pb2_grpc.HandStreamServicer):

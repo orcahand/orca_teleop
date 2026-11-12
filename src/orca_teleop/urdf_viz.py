@@ -8,7 +8,6 @@ retargeted joint command on the ORCA URDF.
 from __future__ import annotations
 
 import logging
-import os
 import queue
 import threading
 from pathlib import Path
@@ -19,11 +18,10 @@ import orca_core
 from orca_core import OrcaHand, OrcaJointPositions
 
 from orca_teleop.pipeline import _SHUTDOWN, RobotSink
-from orca_teleop.retargeting.urdf_offsets import load_ref_offsets
-from orca_teleop.utils import default_urdf_path
-from orca_teleop.utils import RateTicker
+from orca_teleop.utils import RateTicker, default_urdf_path, urdf_with_local_meshes
 
 logger = logging.getLogger(__name__)
+
 
 def _default_model_path(hand_type: str, version: str) -> str:
     models = Path(orca_core.__file__).resolve().parent / "models" / version
@@ -33,15 +31,35 @@ def _default_model_path(hand_type: str, version: str) -> str:
     return str(config_path)
 
 
-def _package_dirs_for_urdf(urdf_path: str) -> list[str]:
-    path = Path(urdf_path).resolve()
-    # orcahand_description layout:
-    #   ~/Documents/orcahand_description/v2/models/urdf/orcahand_right.urdf
-    # package://orcahand_description/... resolves from ~/Documents.
-    for parent in path.parents:
-        if parent.name == "orcahand_description":
-            return [str(parent.parent)]
-    return [str(path.parent)]
+# The real hand's look: black prints, tower and palm skin; white silicone finger skins.
+HAND_RGBA = np.array([0.07, 0.07, 0.08, 1.0])
+SKIN_RGBA = np.array([0.94, 0.94, 0.92, 1.0])
+# The viewer always shows the wrist straight (wrist joint -> middle MCP in line with the
+# forearm), whatever is commanded; the webcam never sets the wrist anyway. A Quest's
+# wrist angle is not shown.
+STRAIGHT_WRIST_DEG = 3.0
+
+
+def _style_hand(visual_model: Any) -> None:
+    """Colour the hand like the real one: the URDF's white skins white, the rest black."""
+    for obj in visual_model.geometryObjects:
+        obj.meshColor = SKIN_RGBA if float(np.mean(obj.meshColor[:3])) > 0.5 else HAND_RGBA
+
+
+def _studio_scene(viewer: Any) -> None:
+    """Light grey-white backdrop, bright soft light, no grid or axes."""
+    viewer["/Background"].set_property("top_color", [0.97, 0.97, 0.97])
+    viewer["/Background"].set_property("bottom_color", [0.82, 0.82, 0.83])
+    viewer["/Grid"].set_property("visible", False)
+    viewer["/Axes"].set_property("visible", False)
+    for light, intensity in (
+        ("AmbientLight", 0.75),
+        ("FillLight", 0.5),
+        ("SpotLight", 0.5),
+        ("PointLightNegativeX", 0.25),
+        ("PointLightPositiveX", 0.25),
+    ):
+        viewer[f"/Lights/{light}/<object>"].set_property("intensity", intensity)
 
 
 class OrcaHandUrdfVizSink(RobotSink):
@@ -70,7 +88,6 @@ class OrcaHandUrdfVizSink(RobotSink):
         self._qpos: np.ndarray | None = None
         self._last_action: OrcaJointPositions | None = None
         self._joint_q_indices: dict[str, int] = {}
-        self._ref_offsets: dict[str, float] = {}
 
     @property
     def retarget_model_path(self) -> str:
@@ -101,16 +118,12 @@ class OrcaHandUrdfVizSink(RobotSink):
         self._hand = hand
         self._urdf_path = urdf_path
 
-        model = pin.buildModelFromUrdf(urdf_path)
-        visual_model = pin.buildGeomFromUrdf(
-            model,
-            urdf_path,
-            pin.GeometryType.VISUAL,
-            package_dirs=_package_dirs_for_urdf(urdf_path),
-        )
+        urdf_xml = urdf_with_local_meshes(urdf_path)
+        model = pin.buildModelFromXML(urdf_xml)
+        visual_model = pin.buildGeomFromUrdfString(model, urdf_xml, pin.GeometryType.VISUAL)
+        _style_hand(visual_model)
         self._model = model
         self._qpos = np.zeros(model.nq, dtype=np.float64)
-        self._ref_offsets = load_ref_offsets(urdf_path, self._hand_type) or {}
         self._build_joint_mapping()
 
         self._last_action = OrcaJointPositions(hand.config.neutral_position)
@@ -118,6 +131,7 @@ class OrcaHandUrdfVizSink(RobotSink):
 
         self._viz = MeshcatVisualizer(model, pin.GeometryModel(), visual_model)
         self._viz.initViewer(open=self._open_browser)
+        _studio_scene(self._viz.viewer)
         self._viz.loadViewerModel(rootNodeName=f"orca_{self._hand_type}_urdf")
         self._viz.display(self._qpos)
 
@@ -129,6 +143,9 @@ class OrcaHandUrdfVizSink(RobotSink):
             self._rate_hz,
             self._viewer_url(),
         )
+
+    def current_positions(self) -> OrcaJointPositions | None:
+        return self._last_action
 
     def run_loop(
         self,
@@ -192,11 +209,12 @@ class OrcaHandUrdfVizSink(RobotSink):
         position_data = positions.as_dict()
         for joint_id in self._hand.config.joint_ids:
             q_idx = self._joint_q_indices[joint_id]
-            ref_offset = self._ref_offsets.get(joint_id, 0.0)
             value_deg = float(
                 position_data.get(joint_id, self._hand.config.neutral_position[joint_id])
             )
-            qpos[q_idx] = np.deg2rad(value_deg) - ref_offset
+            if joint_id == "wrist":
+                value_deg = STRAIGHT_WRIST_DEG
+            qpos[q_idx] = np.deg2rad(value_deg)
         return qpos
 
     def _display(self, action: OrcaJointPositions) -> None:

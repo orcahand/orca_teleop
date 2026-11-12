@@ -19,20 +19,19 @@ tests/
    ```
 
 2. Get the hand models. On v2 the retargeter solves on
-   `v2/models/urdf/orcahand_right_sem.urdf`, which for now exists only on the
-   `release/15-10-26` branch of
-   [orcahand_description](https://github.com/orcahand/orcahand_description).
-   Check that branch out in a folder named exactly `orcahand_description` (the
-   3D viewer finds the meshes by that name):
+   `v2/models/urdf/orcahand_right.urdf` of
+   [orcahand_description](https://github.com/orcahand/orcahand_description) `main`,
+   including its fingertip tip and pad points:
 
    ```bash
-   git clone -b release/15-10-26 git@github.com:orcahand/orcahand_description.git ~/Documents/orcahand_description
+   git clone git@github.com:orcahand/orcahand_description.git ~/Documents/orcahand_description
    ```
 
+   An existing checkout (the old README used `release/15-10-26`):
+   `git -C ~/Documents/orcahand_description fetch && git -C ~/Documents/orcahand_description switch main && git -C ~/Documents/orcahand_description pull`.
    `~/Documents/orcahand_description` is the default location. For another
-   location, set `ORCAHAND_DESCRIPTION_DIR` to that folder. Without the `_sem`
-   file, v2 falls back to the CAD-named URDF and fails with a message about
-   `joint_name_aliases`.
+   location (any folder name), set `ORCAHAND_DESCRIPTION_DIR` to that folder. An
+   older checkout fails at start with a message naming what it lacks.
 
 3. Calibrate the hand before the first teleop session, with orca_ui or
    orca_core's `scripts/calibrate.py`. On an uncalibrated hand,
@@ -57,8 +56,24 @@ uv run --extra teleop orca-teleop-hand --model_path ~/.orca_ui/hands/orcahand-ri
 
 Useful flags: `--dry-run` runs everything except the hand; `--home` moves the
 hand to its neutral pose on connect; `--camera-index N` picks another camera
-(often needed on Linux). Quitting drives the hand back to its zero pose before
-torque goes off, so keep it clear of objects.
+(often needed on Linux).
+
+`--viewer` also shows the hand model in the browser (http://localhost:8098). White
+is the commanded pose, orange the pose the motors report (read 10 times a second,
+`--readback-hz`), and a table lists both per joint. Where they part, the physical
+hand isn't following. It needs viser:
+`uv run --extra teleop --with viser==1.1.1 orca-teleop-hand … --viewer`.
+`--log-joints FILE` writes every command and motor read with its time (JSON lines),
+for measuring how far the hand lags behind its commands; add `--log-current` to log
+each motor's current and velocity with every read too (one more bus read, ~4 ms).
+
+Teleop uses orca_core 0.13, as orca_ui 0.4 does. The log's first line names the
+orca_core in use.
+
+If the camera loses your hand, the robot hand holds its pose; when your hand is
+seen again it eases over to it in a quarter second, as it does at start from
+wherever the hand is. Quitting turns torque off where the hand is, without moving
+it first.
 
 ## Retargeting
 
@@ -67,10 +82,32 @@ analytical retargeting strategy. It uses the full MediaPipe hand pose, explicit 
 mappings from YAML, Pinocchio forward kinematics/Jacobians, and `nlopt` for bounded
 per-frame optimization.
 
+Each frame it matches the fingertips and the direction of every finger segment to
+yours, closes a pinch when your thumb and a fingertip come within about 1.5 cm, and
+smooths the result with a One Euro filter (steady when you hold still, quick when you
+move).
+
 It loads `src/orca_teleop/retargeting/configs/adaptive_analytical_orca_tuned.yaml` by
 default. Pass `--retarget-config path/to/config.yaml` to experiment with frame maps or
 weights. `--retargeter rmsprop` selects the legacy fingertip key-vector retargeter for
 comparison.
+
+## Measure fidelity
+
+Record a webcam session with `--record DIR`. Replay it into the normal pipeline, as
+if it came from the camera, or score how well each finger is matched. The replay
+needs the robot side running first, waiting for a publisher:
+`orca-teleop-urdf --no-local`, or `orca-teleop-hand … --no-local`.
+
+```bash
+uv run --no-sync python -m orca_teleop.ingress.replay_publisher recordings/thumb-01 --loop
+uv run --no-sync python scripts/fidelity_inspector.py recordings/thumb-01 \
+    --model-path ~/.orca_ui/hands/orcahand-right/config.yaml --no-viewer
+```
+
+`tests/test_fidelity.py` replays a recorded pinch clip and fails if pinch, curl,
+jitter or lag get worse. It needs the v2.1 model (`ORCAHAND_DESCRIPTION_DIR`) and
+skips without it; this repo has no CI, so run it locally.
 
 Run the test suite from the repository root with:
 

@@ -14,6 +14,9 @@ Usage::
 
     # Left hand, high confidence
     python -m orca_teleop.ingress.mediapipe.publisher --hand left --confidence 0.9
+
+    # Also record the session (raw frames + landmarks) for offline replay
+    python -m orca_teleop.ingress.mediapipe.publisher --record recordings/thumb-01
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ from orca_teleop.constants import (
     DEFAULT_CAMERA_WIDTH,
 )
 from orca_teleop.ingress import hand_stream_pb2, hand_stream_pb2_grpc
+from orca_teleop.ingress.landmark_recording import LandmarkRecorder
 from orca_teleop.utils import RateTicker
 
 _HAND_CONNECTIONS = [
@@ -89,6 +93,7 @@ class MediaPipePublisher:
         camera_index: int = 0,
         camera_size: tuple[int, int] | None = None,
         capture_fps: float = DEFAULT_CAMERA_FPS,
+        record_dir: str | None = None,
     ) -> None:
         self._server_address = server_address
         self._handedness = handedness.lower()
@@ -97,6 +102,9 @@ class MediaPipePublisher:
         self._camera_index = int(camera_index)
         self._camera_size = camera_size
         self._capture_fps = float(capture_fps)
+        self._record_dir = record_dir
+        self._recorder: LandmarkRecorder | None = None
+        self._frame_by_timestamp: dict[int, int] = {}
 
         # MediaPipe setup
         mediapipe_task_path = os.path.join(
@@ -115,15 +123,20 @@ class MediaPipePublisher:
 
         # Latest frame data (written by callback, read by stream generator)
         self._lock = threading.Lock()
+        # The stream generator sleeps on this until a result arrives, instead of polling.
+        self._new_result = threading.Condition(self._lock)
         self._latest_keypoints: np.ndarray | None = None
+        self._latest_capture_ns = 0
         self._fresh = False
 
         # Visualization state
         self._latest_frame: np.ndarray | None = None
         self._latest_image_landmarks = None
 
-    def _on_result(self, result, _output_image, _timestamp_ms: int) -> None:
+    def _on_result(self, result, _output_image, timestamp_ms: int) -> None:
         """MediaPipe async callback — fires on each detection."""
+        with self._lock:
+            frame = self._frame_by_timestamp.pop(timestamp_ms, -1)
         if not result.hand_landmarks:
             return
 
@@ -135,30 +148,33 @@ class MediaPipePublisher:
         world_landmarks = result.hand_world_landmarks[0]
         keypoints = np.array([[lm.x, lm.y, lm.z] for lm in world_landmarks], dtype=np.float32)
 
+        if self._recorder is not None:
+            image = [[lm.x, lm.y, lm.z] for lm in result.hand_landmarks[0]]
+            score = result.handedness[0][0].score
+            self._recorder.add_landmarks(frame, keypoints, image, detected_hand, score)
+
         with self._lock:
             self._latest_keypoints = keypoints
+            self._latest_capture_ns = timestamp_ms * 1_000_000  # MediaPipe's stamp = capture time
             self._fresh = True
             if self._show_video:
                 self._latest_image_landmarks = result.hand_landmarks[0]
+            self._new_result.notify()
 
     def _frame_generator(self):
         """Yield HandFrame protos as fast as new data arrives."""
         while True:
-            with self._lock:
-                if not self._fresh:
-                    kp = None
-                else:
-                    kp = self._latest_keypoints.copy()
-                    self._fresh = False
-
-            if kp is None:
-                time.sleep(0.001)
-                continue
+            with self._new_result:
+                if not self._new_result.wait_for(lambda: self._fresh, timeout=0.1):
+                    continue
+                kp = self._latest_keypoints.copy()
+                capture_ns = self._latest_capture_ns
+                self._fresh = False
 
             yield hand_stream_pb2.HandFrame(
                 keypoints=kp.ravel().tolist(),
                 handedness=self._handedness,
-                timestamp_ns=time.time_ns(),
+                timestamp_ns=capture_ns,
             )
 
     def run(self) -> None:
@@ -208,6 +224,25 @@ class MediaPipePublisher:
         window_start = time.perf_counter()
 
         try:
+            if self._record_dir is not None:
+                self._recorder = LandmarkRecorder(
+                    self._record_dir,
+                    meta={
+                        "handedness": self._handedness,
+                        "confidence": self._confidence,
+                        "camera_index": self._camera_index,
+                        "camera_size": [
+                            int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                            int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                        ],
+                        "capture_fps": self._capture_fps,
+                        "landmarker": "hand_landmarker.task (LIVE_STREAM)",
+                        "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    },
+                    fps=self._capture_fps,
+                )
+                logger.info("Recording to %s", self._record_dir)
+
             while True:
                 t_read_start = time.perf_counter()
                 ret, frame = cap.read()
@@ -219,9 +254,18 @@ class MediaPipePublisher:
                     with self._lock:
                         self._latest_frame = frame.copy()
 
+                capture_time_ns = time.time_ns()
+                timestamp_ms = capture_time_ns // 1_000_000
+                if self._recorder is not None:
+                    index = self._recorder.add_frame(frame, capture_time_ns)
+                    with self._lock:
+                        self._frame_by_timestamp[timestamp_ms] = index
+                        while len(self._frame_by_timestamp) > 300:  # frames MediaPipe dropped
+                            self._frame_by_timestamp.pop(next(iter(self._frame_by_timestamp)))
+
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-                self._landmarker.detect_async(mp_image, int(time.time() * 1000))
+                self._landmarker.detect_async(mp_image, timestamp_ms)
 
                 if self._show_video:
                     self._display_frame()
@@ -253,6 +297,11 @@ class MediaPipePublisher:
             channel.close()
             cap.release()
             self._landmarker.close()
+            if self._recorder is not None:
+                frames, results = self._recorder.close()
+                logger.info(
+                    "Recorded %d frames, %d with a hand, to %s", frames, results, self._record_dir
+                )
             if self._show_video:
                 cv2.destroyAllWindows()
             logger.info("Publisher shut down.")
@@ -318,6 +367,12 @@ def main() -> None:
         help=f"Target capture rate in frames per second (default: {DEFAULT_CAMERA_FPS:g})",
     )
     parser.add_argument(
+        "--record",
+        default=None,
+        metavar="DIR",
+        help="Also record raw frames and landmarks into DIR (must be new or empty)",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -346,6 +401,7 @@ def main() -> None:
         camera_index=args.camera_index,
         camera_size=camera_size,
         capture_fps=args.capture_fps,
+        record_dir=args.record,
     )
     publisher.run()
 
