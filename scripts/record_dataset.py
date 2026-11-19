@@ -51,7 +51,7 @@ Example usage:
         --task "pick up the block" --num-episodes 5
 
     # Teleop the REAL hand with Manus gloves, ending each episode by pressing SPACE
-    # (prerequisite: 'manus-client run' streaming glove data)
+    # (prerequisite: the glove bridge streaming glove data; README, MANUS gloves)
     python scripts/record_dataset.py --repo-id $HF_USERNAME/orca-manus \\
         --task "pick up the block" --backend hardware \\
         --local --source manus --hand right \\
@@ -389,7 +389,7 @@ def _main_record(argv: list[str]) -> None:
         default="mediapipe",
         help=(
             "Input publisher and landmark convention: 'mediapipe' webcam (default), "
-            "'manus' gloves (requires 'manus-client run'), or 'metaquest' WebXR in "
+            "'manus' gloves (requires the glove bridge), or 'metaquest' WebXR in "
             "Quest Browser. With --local the matching publisher is launched here; "
             "without --local, launch it separately and point it at this ingress."
         ),

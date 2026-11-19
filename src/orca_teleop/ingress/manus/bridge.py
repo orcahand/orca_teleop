@@ -48,8 +48,10 @@ CALIBRATION_FILE = "Calibration_{side}.mcal"  # manus-client's and its Calibrati
 # The SDK streams sent, with the licence features (LicenseInfo, ManusSDKTypes.h) each needs.
 # MANUS's own ROS 2 node sends nothing in integrated mode without "integrated"; that "raw"
 # gates the raw device (sensor) data is our reading of its name: the SDK doesn't say. The
-# SDK enforces the licence; the bridge says what is missing and leaves those streams out,
-# except the hands: whether they come is the SDK's call.
+# SDK enforces the licence; the bridge only warns about what may be missing and sends
+# whatever the SDK gives. Not sent: trackers (their data needs per-tracker Get calls, not
+# tried with gloves yet), gestures (no Python callback in SDK 3.2.1), the retargeted skeleton
+# stream (it needs a skeleton loaded first) and haptics (output to the glove).
 STREAMS = {
     "raw_skeleton": ("integrated",),
     "ergonomics": ("integrated",),
@@ -172,7 +174,6 @@ class ManusBridge:
         self._frames: queue.SimpleQueue = queue.SimpleQueue()
         self._layouts: dict[int, tuple[list[int], str, list[int]]] = {}  # ids, side, rows
         self._calibrated_since: dict[int, int] = {}  # glove id -> t_ns; 0: none loaded
-        self._blocked: set[str] = set()  # streams left out for the licence
         self._licence_logged = False
         self._last_seen: dict[int, tuple[float, str]] = {}  # glove id -> (monotonic, side)
         self._sent, self._t_sent = 0, time.monotonic()  # messages sent, and when the last
@@ -309,8 +310,8 @@ class ManusBridge:
     # ----- the publish thread --------------------------------------------------------------
 
     def _load_calibration(self, glove_id: int, side: str) -> None:
-        """Once per glove, when found: its side's .mcal, as manus-client does. Frames from
-        before it are not sent. A missing or rejected file: a warning, uncalibrated data."""
+        """Once per glove, when found: its side's .mcal, as manus-client does. A missing or
+        rejected file: a warning, uncalibrated data."""
         self._calibrated_since[glove_id] = 0
         path = self.calibration_dir / CALIBRATION_FILE.format(side=side)
         fix = "calibrate it with MANUS's SDK client (README, MANUS gloves)"
@@ -346,9 +347,6 @@ class ManusBridge:
             cached = (ids, *sort_nodes(infos, ids))
             self._layouts[glove_id] = cached
             logger.info("Glove %d is the %s hand, %d nodes", glove_id, cached[1], len(ids))
-            twins = [g for g, (_, side, _) in self._layouts.items() if side == cached[1]]
-            if len(twins) > 1:
-                self._warn(f"same_side_{cached[1]}", f"Gloves {twins} all say {cached[1]} hand")
             if glove_id not in self._calibrated_since:
                 self._load_calibration(glove_id, cached[1])
         return cached[1], nodes[cached[2]]
@@ -365,8 +363,7 @@ class ManusBridge:
             self._clear(f"glove_{glove_id}_unusable", f"Glove {glove_id} works now")
             self._last_seen[glove_id] = (time.monotonic(), side)
             self._clear(f"glove_{glove_id}_lost", f"The {side} glove ({glove_id}) is back")
-            if t_ns >= self._calibrated_since[glove_id]:
-                hands[side], infos[side] = hand, sdk_plain(self.ffi, info)
+            hands[side], infos[side] = hand, sdk_plain(self.ffi, info)
         return hands, infos
 
     def _sdk_data(self, stream: str, data: Any) -> Any:
@@ -389,21 +386,17 @@ class ManusBridge:
 
     def _check_licence(self, licence: dict) -> None:
         """On each landscape with a dongle: warn about each stream the licence lacks a
-        feature for, and leave it out, all but the hands; clear the warning once it's there."""
+        feature for (it is still sent if the SDK gives it); clear the warning once it's there."""
         if not self._licence_logged:
             self._licence_logged = True
             logger.info("MANUS licence: %s", ", ".join(k for k, v in licence.items() if v))
-        self._blocked = set()
         for stream, features in STREAMS.items():
             name, lacking = stream.replace("_", " "), [f for f in features if not licence.get(f)]
             if not lacking:
                 self._clear(f"licence_{stream}", f"{name}: the MANUS licence covers it now")
                 continue
-            if stream != "raw_skeleton":
-                self._blocked.add(stream)
-            what = "hands may not come" if stream == "raw_skeleton" else "is not streamed"
             lacking = " and ".join(_FEATURE_NAMES[f] for f in lacking)
-            text = f"{name} {what}: your MANUS licence does not include {lacking}"
+            text = f"{name} may not come: your MANUS licence does not include {lacking}"
             self._warn(f"licence_{stream}", text)
 
     def _check_gloves(self) -> None:
@@ -444,8 +437,6 @@ class ManusBridge:
                 t_ns, stream, data = self._frames.get(timeout=STATUS_EVERY_S / 4)
             except queue.Empty:
                 continue
-            if stream in self._blocked:
-                continue
             try:
                 if stream == "raw_skeleton":
                     hands, data = self._hands(t_ns, data)
@@ -459,6 +450,7 @@ class ManusBridge:
                     text = f"A {stream} message failed (first error: {err!r})"
                     self._warn(f"bad_{stream}", text, True)
                 continue
+            self._clear(f"bad_{stream}", f"{stream} messages work again")
             self._send(socket, raw)
             for key in hands or (stream,):
                 counts[key] = counts.get(key, 0) + 1

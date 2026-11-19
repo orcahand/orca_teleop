@@ -642,12 +642,12 @@ def test_teleop_hears_why_no_hands_come_while_the_sdk_is_not_connected(monkeypat
     assert calls.count("CoreSdk_SetRawSkeletonHandMotion") == 1
 
 
-def test_every_sdk_stream_goes_out_unless_the_licence_lacks_its_feature(
+def test_every_sdk_stream_goes_out_and_a_missing_licence_feature_is_reported(
     monkeypatch, tmp_path, caplog
 ):
     """Ergonomics, raw device data, landscape and system messages go out as the SDK's
     structs in JSON. A landscape without a dongle has no licence yet: nothing stops. Then
-    the licence lacks Raw, so raw device data stops with a warning and the rest goes on.
+    the licence lacks Raw: a warning, but raw device data still goes out if the SDK gives it.
     Teleop's publisher skips those messages."""
     module, _ = _two_gloves(monkeypatch, _clip(1)[0])
     caplog.set_level("INFO", logger="manus_bridge")
@@ -674,17 +674,18 @@ def test_every_sdk_stream_goes_out_unless_the_licence_lacks_its_feature(
             data=[{"id": 11, "data": [10.0, 20.123456789]}],
             dataCount=1,
         )
-        _fire(module, "raw_device_data", rawDeviceDataCount=2)  # not licensed: not sent
+        _fire(module, "raw_device_data", rawDeviceDataCount=2)  # not licensed: still sent
         _fire(module, "system", type=3, infoString=b"hello", infoUInt=7)
         _fire(module, "raw_skeleton", skeletonsCount=2)
-        messages = running.receive(6)
+        messages = running.receive(7)
     finally:
         running.stop()
     streams = [wire.sdk_data(raw) for raw in messages]
     assert [name for name, _ in streams] == [
-        *("landscape", "raw_device_data", "landscape", "ergonomics", "system", "raw_skeleton")
+        *("landscape", "raw_device_data", "landscape", "ergonomics", "raw_device_data"),
+        *("system", "raw_skeleton"),
     ]
-    landscape, ergonomics, system = (data for _, data in streams[2:5])
+    landscape, ergonomics, system = (streams[i][1] for i in (2, 3, 5))
     assert landscape == {
         "gloveDevices": {
             "dongleCount": 1,
@@ -701,12 +702,12 @@ def test_every_sdk_stream_goes_out_unless_the_licence_lacks_its_feature(
         }
     ]
     assert system == {"type": 3, "infoString": "hello", "infoUInt": 7}
-    assert "raw device data is not streamed: your MANUS licence does not include Raw" in caplog.text
+    assert "raw device data may not come: your MANUS licence does not include Raw" in caplog.text
     assert "licence_raw_device_data" not in wire.bridge_warnings(messages[1])  # not read yet
     for raw in messages[2:]:
         assert "licence_raw_device_data" in wire.bridge_warnings(raw)
     publisher = ManusPublisher(handedness="right")
-    for raw in messages[:5]:
+    for raw in messages[:6]:
         assert wire.decode(raw)[1] == {}
         assert publisher.keypoints_from_message(raw) == (None, [])
 
@@ -775,11 +776,11 @@ def test_only_a_glove_silent_for_lost_after_s_is_lost_and_its_next_frame_clears_
     assert log[-1] == "The left glove (22) is back"
 
 
-def test_the_licence_is_checked_on_each_landscape_and_never_stops_the_hands(
+def test_the_licence_is_checked_on_each_landscape_and_never_stops_a_stream(
     monkeypatch, tmp_path, caplog
 ):
-    """A licence without SDK Integrated stops every stream but the hands, with warnings;
-    a later landscape with the full licence clears them and the streams flow again."""
+    """A licence without SDK Integrated gives warnings but stops no stream the SDK gives;
+    a later landscape with the full licence clears them."""
     module, _ = _two_gloves(monkeypatch, _clip(1)[0])
     caplog.set_level("INFO", logger="manus_bridge")
 
@@ -793,20 +794,24 @@ def test_the_licence_is_checked_on_each_landscape_and_never_stops_the_hands(
         running.first_with_both_hands()
         landscape(integrated=False)
         _fire(module, "raw_skeleton", skeletonsCount=2)  # the hands still go out
-        _fire(module, "ergonomics", dataCount=0)  # not licensed: not sent
-        _fire(module, "raw_device_data", rawDeviceDataCount=1)  # not licensed: not sent
+        _fire(module, "ergonomics", dataCount=0)  # not licensed: still sent
+        _fire(module, "raw_device_data", rawDeviceDataCount=1)  # not licensed: still sent
         landscape()
         _fire(module, "raw_device_data", rawDeviceDataCount=1)
-        messages = running.receive(4)
+        messages = running.receive(6)
     finally:
         running.stop()
     streams = [wire.sdk_data(raw)[0] for raw in messages]
-    assert streams == ["landscape", "raw_skeleton", "landscape", "raw_device_data"]
-    blocked = {"licence_raw_skeleton", "licence_ergonomics", "licence_raw_device_data"}
-    assert blocked <= set(wire.bridge_warnings(messages[1]))
+    assert streams == [
+        *("landscape", "raw_skeleton", "ergonomics", "raw_device_data", "landscape"),
+        "raw_device_data",
+    ]
+    lacking = {"licence_raw_skeleton", "licence_ergonomics", "licence_raw_device_data"}
+    for raw in messages[1:4]:
+        assert lacking <= set(wire.bridge_warnings(raw))
     assert len(wire.decode(messages[1])[1]) == 2
-    assert not blocked & set(wire.bridge_warnings(messages[3]))
-    assert "raw skeleton hands may not come: your MANUS licence does not include SDK" in (
+    assert not lacking & set(wire.bridge_warnings(messages[5]))
+    assert "raw skeleton may not come: your MANUS licence does not include SDK" in (
         caplog.text
     )
     assert "ergonomics: the MANUS licence covers it now" in caplog.text
@@ -930,9 +935,9 @@ class _Socket:
         self.sent.append(raw)
 
 
-def test_every_frame_goes_out_except_those_from_before_the_calibration(monkeypatch):
+def test_every_frame_goes_out_in_order(monkeypatch):
     """The publish loop sends each queued frame, in order, never merging or skipping one,
-    except a calibrated glove's frames from before its .mcal was loaded."""
+    calibrated glove or not."""
     module, _ = _fake_manus_sdk(monkeypatch, {}, {})
     the_bridge = bridge.ManusBridge()
     the_bridge.ffi = module.ffi
@@ -949,7 +954,7 @@ def test_every_frame_goes_out_except_those_from_before_the_calibration(monkeypat
     the_bridge.publish_loop(socket)
     sent = [wire.decode(raw) for raw in socket.sent if wire.sdk_data(raw)[0] != "status"]
     assert [t for t, _ in sent] == [500, 999, 1_000, 1_001, 2_000]
-    assert [sorted(hands) for _, hands in sent] == [["left"]] * 2 + [["left", "right"]] * 3
+    assert [sorted(hands) for _, hands in sent] == [["left", "right"]] * 5
     for t_ns, hands in sent:
         assert np.all(hands["left"] == t_ns)
 
@@ -969,6 +974,7 @@ def test_the_bridge_runs_without_orca_teleop():
     assert out.stdout.strip() == "tcp://127.0.0.1:2044"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGINT to a child needs POSIX signals")
 def test_ctrl_c_ends_the_stream_cleanly(caplog):
     """A stopped publisher lets its stream close before cancelling: a cancelled stream
     logs an error (with a traceback) in the ingress server on every stop."""

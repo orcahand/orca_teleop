@@ -2,8 +2,8 @@
 
 This module intentionally keeps the Manus CSV conversion next to the replay
 publisher. The Hugging Face dataset already stores converted ``(21, 3)``
-keypoints, but the same coordinate and landmark mapping is the contract a live
-Manus publisher will need when the glove SDK is wired in.
+keypoints. The live glove path (bridge.py, publisher.py) maps the SDK's raw
+skeleton itself, in conversion.py.
 """
 
 from __future__ import annotations

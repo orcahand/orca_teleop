@@ -87,36 +87,44 @@ the webcam.
 gloves -> dongle -> [glove computer] MANUS SDK -> bridge.py --ZMQ :2044--> [teleop computer] orca-teleop-hand --source manus
 ```
 
-On the glove computer (Linux x86_64 or ARM64):
+On the glove computer (Linux x86_64 or ARM64; the commands are for Ubuntu/Debian):
 
 1. Get the MANUS SDK package for Linux from MANUS
-   ([SDK getting started](https://docs.manus-meta.com/latest/Plugins/SDK/getting%20started/)).
-   It needs a MANUS licence with the SDK, SDK Integrated and Linux features (the
-   Robotics edition). The licence is on the USB dongle, so keep the dongle plugged in.
+   ([SDK getting started](https://docs.manus-meta.com/latest/Plugins/SDK/getting%20started/))
+   and unzip it to `~/MANUS_SDK`. It needs a MANUS licence with the SDK, SDK Integrated
+   and Linux features (the Robotics edition). The licence is on the USB dongle, so keep
+   the dongle plugged in.
 2. Install the SDK's libraries and its udev rules (they let the SDK open the
-   dongle), then plug the dongle in again:
+   dongle; the script uses apt-get), then plug the dongle in again:
 
    ```bash
    sudo bash ~/MANUS_SDK/C++/SDKMinimalClient/install-dependencies.sh
    sudo udevadm control --reload-rules && sudo udevadm trigger
    ```
 
-3. Calibrate each glove for the person who wears it, with MANUS's SDK client:
-   `cd ~/MANUS_SDK/Python && python3 examples/sdk_client.py` (needs `pip install cffi`).
+3. Get the bridge: it is only the folder `src/orca_teleop/ingress/manus/` of this repo,
+   so either clone the repo (`git clone https://github.com/orcahand/orca_teleop.git`)
+   or copy that folder over (`scp -r src/orca_teleop/ingress/manus USER@GLOVE_PC:~/manus-bridge`).
+4. Make one Python environment for MANUS's tools and the bridge (Python 3.10 or newer):
+
+   ```bash
+   python3 -m venv ~/manus-venv && source ~/manus-venv/bin/activate
+   pip install cffi numpy pyzmq "protobuf>=4.25"
+   export PYTHONPATH=~/MANUS_SDK/Python
+   ```
+
+5. Calibrate each glove for the person who wears it, with MANUS's SDK client, in that
+   environment: `cd ~/MANUS_SDK/Python && python examples/sdk_client.py`.
    Choose Integrated, then `C` (Glove Calibration): `H` picks the hand, `S` starts,
    `E` runs a step and `P` goes to the next, `F` finishes, and `K` saves
    `left_0x<id>.mcal` or `right_0x<id>.mcal` in the current folder. Rename them to
    `Calibration_left.mcal` and `Calibration_right.mcal`, the names the bridge loads
-   (and the older `manus-client` and its CalibrationGUI use).
-4. Start the bridge. It needs only its own folder of this repo, not the rest of
-   orca_teleop. Only one program can hold the MANUS SDK connection, so first stop
-   the SDK client (and the older `manus-client`, if it runs).
+   (and the older `manus-client` and its CalibrationGUI use), in one folder, e.g. `~/gloves`.
+6. Start the bridge, in the same environment. Only one program can hold the MANUS SDK
+   connection, so first stop the SDK client (and the older `manus-client`, if it runs).
 
    ```bash
-   python3 -m venv ~/manus-bridge && source ~/manus-bridge/bin/activate
-   pip install cffi numpy pyzmq "protobuf>=4.25,<6"   # Python 3.10 or newer
-   export PYTHONPATH=~/MANUS_SDK/Python
-   python orca_teleop/src/orca_teleop/ingress/manus/bridge.py --calibration-dir ~/gloves
+   python ~/manus-bridge/bridge.py --calibration-dir ~/gloves   # or the clone's src/orca_teleop/ingress/manus/bridge.py
    ```
 
    `--calibration-dir` is the folder with the two `.mcal` files (default: the current

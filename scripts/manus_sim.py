@@ -3,4 +3,5 @@
 from orca_teleop.pipeline import run_manus_local
 from orca_teleop.sim import OrcaHandSimSink
 
-run_manus_local(sink=OrcaHandSimSink(env_name="right", render_mode="human"))
+if __name__ == "__main__":  # the publisher is a spawned child, which imports this file again
+    run_manus_local(sink=OrcaHandSimSink(env_name="right", render_mode="human"))

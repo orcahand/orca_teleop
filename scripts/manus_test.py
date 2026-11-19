@@ -9,7 +9,7 @@ Examples:
     python scripts/manus_test.py
 
     # Left hand, custom ZMQ address
-    python scripts/manus_test.py --hand left --zmq-address tcp://192.168.1.10:2044
+    python scripts/manus_test.py --hand left --glove-address 192.168.1.10:2044
 
     # Headless rendering
     python scripts/manus_test.py --render-mode rgb_array
@@ -60,9 +60,10 @@ def main() -> None:
         help="Hand to track (default: right)",
     )
     parser.add_argument(
-        "--zmq-address",
+        "--glove-address",
         default="tcp://127.0.0.1:2044",
-        help="ZMQ address for Manus C++ client (default: tcp://127.0.0.1:2044)",
+        help="The glove bridge's address, host:port or tcp://host:port "
+        "(default: tcp://127.0.0.1:2044)",
     )
     parser.add_argument(
         "--visualize-landmarks",
@@ -91,7 +92,7 @@ def main() -> None:
         urdf_path=args.urdf_path,
         port=args.port,
         handedness=args.hand,
-        zmq_address=args.zmq_address,
+        zmq_address=args.glove_address,
         sink=sink,
         visualize_landmarks=args.visualize_landmarks,
     )
