@@ -1121,6 +1121,7 @@ def run_manus_local(
         from orca_teleop.retargeting.config import DEFAULT_RETARGETER, default_config_path
 
         backend = run_kwargs.get("retargeter_backend") or DEFAULT_RETARGETER
+        run_kwargs["retargeter_backend"] = backend
         run_kwargs["retargeter_config_path"] = str(default_config_path(backend, "manus"))
     logger.info("MANUS publisher: glove bridge %s, %s hand", zmq_address, handedness)
     run_with_publisher(

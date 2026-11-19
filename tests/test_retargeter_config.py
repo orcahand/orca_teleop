@@ -173,3 +173,40 @@ def test_run_manus_local_uses_the_glove_config_by_default(monkeypatch):
     )
     pipeline.run_manus_local(handedness="right", retargeter_config_path="x.yaml")
     assert seen["retargeter_config_path"] == "x.yaml"
+
+
+def test_a_file_named_like_its_packaged_base_starts_from_the_packaged_one(tmp_path):
+    over = _write(tmp_path / "manus.yaml", "base: manus.yaml\nretarget:\n  maxeval: 7\n")
+    cfg = load_config(over)
+    assert cfg["retarget"]["maxeval"] == 7 and cfg["retarget"]["palm_offset_cm"] == 0.0
+
+
+def test_a_base_with_a_folder_is_never_swapped_for_a_packaged_file(tmp_path):
+    (tmp_path / "hand").mkdir()
+    over = _write(tmp_path / "hand" / "s.yaml", "base: ../configs/manus.yaml\n")
+    with pytest.raises(FileNotFoundError):
+        load_config(over)
+    for bad in ("''", "."):
+        cfg = _write(tmp_path / "e.yaml", f"type: adaptive_analytical\nbase: {bad}\n")
+        with pytest.raises(ValueError, match="must be a file name"):
+            load_config(cfg)
+
+
+@pytest.mark.parametrize("entry", ["teleop_hand", "teleop_urdf"])
+def test_each_entry_point_picks_the_config_of_its_source(monkeypatch, entry):
+    from orca_teleop import cli
+
+    class Sink:
+        handedness, joint_ids = "right", []
+
+        def __init__(self, **kwargs):
+            pass
+
+    got = {}
+    monkeypatch.setattr(cli, "OrcaHandSink", Sink)
+    monkeypatch.setattr("orca_teleop.urdf_viz.OrcaHandUrdfVizSink", Sink)
+    monkeypatch.setattr(cli, "_launch", lambda args, sink, hand: got.update(vars(args)))
+    getattr(cli, entry)(
+        ["--source", "manus", "--dry-run"] if entry == "teleop_hand" else ["--source", "manus"]
+    )
+    assert got["retargeter_config"].name == "manus.yaml"

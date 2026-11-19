@@ -64,12 +64,15 @@ def _load(path: Path, seen: tuple[Path, ...]) -> dict[str, Any]:
     base = cfg.pop("base", None)
     if base is None:
         return cfg
-    if not isinstance(base, str):
+    if not isinstance(base, str) or not base.strip() or (path.parent / base).is_dir():
         raise ValueError(f"{path}: `base:` must be a file name, got {base!r}")
-    # Next to the file, else a packaged config (so a copy elsewhere still finds its base).
+    # Next to the file, else a packaged config by its bare name (so a copy elsewhere, or
+    # a file named like the packaged one it starts from, still finds its base).
     base_path = path.parent / base
-    if not base_path.exists() and _packaged(base).exists():
-        base_path = _packaged(base)
+    bare = Path(base).name == base
+    if bare and (not base_path.exists() or base_path.resolve() == path.resolve()):
+        if _packaged(base).exists():
+            base_path = _packaged(base)
     return _merge(_load(base_path, (*seen, path.resolve())), cfg)
 
 
