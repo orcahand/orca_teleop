@@ -2007,14 +2007,6 @@ wheels = [
 ]
 
 [[package]]
-name = "manus-client"
-version = "0.1.0"
-source = { url = "https://github.com/orcahand/manus-client/releases/download/v0.1.0/manus_client-0.1.0-py3-none-manylinux_2_35_x86_64.whl" }
-wheels = [
-    { url = "https://github.com/orcahand/manus-client/releases/download/v0.1.0/manus_client-0.1.0-py3-none-manylinux_2_35_x86_64.whl", hash = "sha256:e2f146415879bf21952d31d8313050856196083303e2360c96f8b9e57150da06" },
-]
-
-[[package]]
 name = "markupsafe"
 version = "3.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -2767,7 +2759,6 @@ learning = [
     { name = "pyyaml" },
 ]
 manus = [
-    { name = "manus-client" },
     { name = "pyzmq" },
 ]
 mediapipe = [
@@ -2805,7 +2796,6 @@ requires-dist = [
     { name = "cmeel-urdfdom", marker = "extra == 'adaptive'", specifier = "<5" },
     { name = "grpcio", specifier = ">=1.62.3" },
     { name = "lerobot", marker = "extra == 'learning'", specifier = ">=0.4,<0.5" },
-    { name = "manus-client", marker = "extra == 'manus'", url = "https://github.com/orcahand/manus-client/releases/download/v0.1.0/manus_client-0.1.0-py3-none-manylinux_2_35_x86_64.whl" },
     { name = "mediapipe-numpy2", marker = "extra == 'mediapipe'" },
     { name = "meshcat", marker = "extra == 'urdf-viz'" },
     { name = "nlopt", marker = "extra == 'adaptive'" },

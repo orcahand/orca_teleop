@@ -47,9 +47,10 @@ avp = [
 metaquest = [
     "aiohttp>=3.10",
 ]
+# The teleop side of MANUS gloves: it listens to the glove bridge (ZMQ). The bridge
+# runs on the glove computer with the MANUS SDK and its own few packages (README).
 manus = [
     "pyzmq>=25.0",
-    "manus-client @ https://github.com/orcahand/manus-client/releases/download/v0.1.0/manus_client-0.1.0-py3-none-manylinux_2_35_x86_64.whl",
 ]
 sim = [
     "orca_sim @ git+https://github.com/orcahand/orca_sim.git@main"
