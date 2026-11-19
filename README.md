@@ -75,6 +75,108 @@ seen again it eases over to it in a quarter second, as it does at start from
 wherever the hand is. Quitting turns torque off where the hand is, without moving
 it first.
 
+## MANUS gloves (Linux)
+
+Gloves always take two programs. The **bridge** runs on the Linux computer that
+the gloves' USB dongle is plugged into. There the MANUS SDK reads the gloves, and
+the bridge publishes every frame on a ZMQ address (port 2044). **Teleop** reads
+that address on any OS and retargets the glove's hand with the same retargeter as
+the webcam.
+
+```text
+gloves -> dongle -> [glove computer] MANUS SDK -> bridge.py --ZMQ :2044--> [teleop computer] orca-teleop-hand --source manus
+```
+
+On the glove computer (Linux x86_64 or ARM64):
+
+1. Get the MANUS SDK package for Linux from MANUS
+   ([SDK getting started](https://docs.manus-meta.com/latest/Plugins/SDK/getting%20started/)).
+   It needs a MANUS licence with the SDK, SDK Integrated and Linux features (the
+   Robotics edition). The licence is on the USB dongle, so keep the dongle plugged in.
+2. Install the SDK's libraries and its udev rules (they let the SDK open the
+   dongle), then plug the dongle in again:
+
+   ```bash
+   sudo bash ~/MANUS_SDK/C++/SDKMinimalClient/install-dependencies.sh
+   sudo udevadm control --reload-rules && sudo udevadm trigger
+   ```
+
+3. Calibrate each glove for the person who wears it, with MANUS's SDK client:
+   `cd ~/MANUS_SDK/Python && python3 examples/sdk_client.py` (needs `pip install cffi`).
+   Choose Integrated, then `C` (Glove Calibration): `H` picks the hand, `S` starts,
+   `E` runs a step and `P` goes to the next, `F` finishes, and `K` saves
+   `left_0x<id>.mcal` or `right_0x<id>.mcal` in the current folder. Rename them to
+   `Calibration_left.mcal` and `Calibration_right.mcal`, the names the bridge loads
+   (and the older `manus-client` and its CalibrationGUI use).
+4. Start the bridge. It needs only its own folder of this repo, not the rest of
+   orca_teleop. Only one program can hold the MANUS SDK connection, so first stop
+   the SDK client (and the older `manus-client`, if it runs).
+
+   ```bash
+   python3 -m venv ~/manus-bridge && source ~/manus-bridge/bin/activate
+   pip install cffi numpy pyzmq "protobuf>=4.25,<6"   # Python 3.10 or newer
+   export PYTHONPATH=~/MANUS_SDK/Python
+   python orca_teleop/src/orca_teleop/ingress/manus/bridge.py --calibration-dir ~/gloves
+   ```
+
+   `--calibration-dir` is the folder with the two `.mcal` files (default: the current
+   folder). The bridge loads each file when it finds that side's glove. If a file is
+   missing or the SDK rejects it, it warns "Streaming UNCALIBRATED ... glove" and
+   goes on. It logs the licence's features, then every 5 s what it sends per second.
+
+On the teleop computer:
+
+```bash
+uv run --extra teleop --extra manus orca-teleop-hand --source manus --model_path ~/.orca_ui/hands/orcahand-right/config.yaml
+```
+
+`--glove-address HOST:PORT` sets where teleop reads (default `127.0.0.1:2044`;
+`tcp://HOST:PORT` works too).
+`--dry-run` and `--viewer` work as with the webcam.
+
+One computer or two:
+
+- **One Linux computer:** run both commands on it, as shown.
+- **Two computers, SSH tunnel:** keep the bridge as shown (it listens on its own
+  computer only). On the teleop computer, run
+  `ssh -N -L 2044:127.0.0.1:2044 USER@GLOVE_PC`, then teleop as shown.
+- **Two computers, network:** start the bridge with `--bind tcp://0.0.0.0:2044`,
+  open TCP port 2044 in the glove computer's firewall, and add
+  `--glove-address GLOVE_PC:2044` to teleop. The stream has no password or
+  encryption, so do this only on a network you trust.
+
+If MANUS's SDK aborts at start with `basic_string::_M_construct null not valid` (over
+SSH, from a service), locale variables are missing: the bridge sets them itself; for
+MANUS's own tools, first run
+`export LANG=en_US.UTF-8 LANGUAGE=en_US:en LC_ALL=en_US.UTF-8 LC_MESSAGES=en_US.UTF-8`.
+
+Without gloves, the fake bridge sends a made-up hand that opens and closes
+(`--landmarks tests/data/pinch_clip.npz` sends a recorded hand instead):
+
+```bash
+uv run --extra teleop --extra manus python -m orca_teleop.ingress.manus.fake_bridge --loop
+uv run --extra teleop --extra manus orca-teleop-hand --source manus --dry-run
+```
+
+Each hand goes out as 25 skeleton nodes (the wrist, then each finger's joints) in
+metres, sorted by the SDK's own node labels; the retargeter uses 21 of them.
+`src/orca_teleop/ingress/manus/conversion.py` holds that contract, and
+`tests/test_manus.py` checks it. The older C++ client
+([manus-client](https://github.com/orcahand/manus-client), `manus-client run`)
+sends the same hand messages on `127.0.0.1:2044`, so teleop reads it the same way.
+
+The bridge also sends everything else the MANUS SDK gives in integrated mode, one
+message per SDK callback on the same address: the ergonomics joint angles (degrees),
+the raw device (fingertip sensor) data, the landscape (gloves, dongle, battery,
+signal, licence) and system messages. Each message names its stream in `sdk_stream`
+and holds the SDK's own structs as JSON in `sdk_json` (field names as in MANUS's
+`ManusSDKTypes.h`; `wire.sdk_data()` reads them). Teleop uses only the hands; other
+readers should skip the messages without hands. If the licence lacks a stream's
+feature, the bridge says so and leaves that stream out (never the hands). Its warnings
+(the SDK not connected, a feature the licence lacks, an UNCALIBRATED glove, a lost
+glove) go to teleop in every message, and in a `status` message without hands at least
+once a second; teleop logs each once when it appears and once when it clears.
+
 ## Retargeting
 
 The default teleop backend is `adaptive_analytical`, an Orca-native port of the Wuji-style
