@@ -55,7 +55,6 @@ from mpl_toolkits.mplot3d.art3d import Line3D
 from orca_teleop.constants import HEARTBEAT_INTERVAL, QUEUES_MAXSIZE
 from orca_teleop.ingress import DEFAULT_PORT, HandLandmarks, IngressServer
 from orca_teleop.retargeting import utils as retargeter_utils
-from orca_teleop.retargeting.constants import MANO_TO_URDF_TRANSLATION
 from orca_teleop.retargeting.retargeter import FINGERS, Retargeter, RetargeterBackend, TargetPose
 
 logger = logging.getLogger(__name__)
@@ -174,11 +173,7 @@ def _compute_rmsprop_diagnostic_snapshot(
         joints, target_pose.source
     )
     scaled = normalized * retargeter._mano_scale
-    in_urdf_frame = (
-        scaled @ cfg.urdfhand_rot_matrix.T
-        + cfg.urdfhand_center
-        + np.array(MANO_TO_URDF_TRANSLATION)
-    )
+    in_urdf_frame = scaled @ cfg.urdfhand_rot_matrix.T + cfg.urdfhand_center
     joint_t = torch.tensor(in_urdf_frame, dtype=torch.float32, device=cfg.device)
     mano_ft, mano_palm = retargeter_utils.extract_mano_fingertips_and_palm(
         joint_t, list(FINGERS), target_pose.source

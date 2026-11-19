@@ -672,7 +672,8 @@ def retargeter_worker(
 
             now = time.monotonic()
             if ramp.lost(now) and hasattr(retargeter, "reset_tracking"):
-                retargeter.reset_tracking()  # a stale filter or warm start would drag the return
+                # a stale filter would drag the return; the last pose stays as the warm start
+                retargeter.reset_tracking()
 
             t_retarget_start = time.perf_counter()
             try:

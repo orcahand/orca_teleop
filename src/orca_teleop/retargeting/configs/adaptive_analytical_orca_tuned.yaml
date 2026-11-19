@@ -2,6 +2,14 @@ optimizer:
   type: adaptive_analytical
 
 retarget:
+  # Solver evaluations per frame, at most. At 50 a fifth of the solves stopped unconverged, so
+  # rounding-level input changes moved the output by up to 17 deg (glove and webcam replays,
+  # 19 Nov 2026); a converged solve still stops early (ftol_abs), so the extra evaluations
+  # cost time only where they are needed.
+  maxeval: 150
+  # The robot palm point the targets are measured from: this far palmar (base frame -z) of
+  # the midpoint of the thumb and pinky bases. From the ETH clean-up (28a034a), never measured.
+  palm_offset_cm: 1.5
   huber_delta_cm: 2.0
   huber_delta_dir: 0.5
   norm_delta: 0.04

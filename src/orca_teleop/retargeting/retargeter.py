@@ -12,11 +12,7 @@ from orca_core import OrcaHand, OrcaJointPositions
 
 from orca_teleop.constants import WRIST_MOTOR_IDX
 from orca_teleop.retargeting import utils as retargeter_utils
-from orca_teleop.retargeting.constants import (
-    CALIBRATION_FRAMES,
-    DEFAULT_LOSS_COEFFS,
-    MANO_TO_URDF_TRANSLATION,
-)
+from orca_teleop.retargeting.constants import CALIBRATION_FRAMES, DEFAULT_LOSS_COEFFS
 from orca_teleop.utils import default_urdf_path, infer_model_version
 
 logger = logging.getLogger(__name__)
@@ -441,11 +437,7 @@ class Retargeter:
 
         # Step 4: scale → rotate into URDF base frame → key vectors
         scaled = normalized * self._mano_scale
-        in_urdf_frame = (
-            scaled @ cfg.urdfhand_rot_matrix.T
-            + cfg.urdfhand_center
-            + np.array(MANO_TO_URDF_TRANSLATION)
-        )
+        in_urdf_frame = scaled @ cfg.urdfhand_rot_matrix.T + cfg.urdfhand_center
         joint_t = torch.tensor(in_urdf_frame, dtype=torch.float32, device=cfg.device)
         mano_ft, mano_palm = retargeter_utils.extract_mano_fingertips_and_palm(
             joint_t, list(FINGERS), source
