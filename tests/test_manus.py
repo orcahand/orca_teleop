@@ -343,6 +343,11 @@ def test_the_made_up_hand_closes_the_robot_fingers():
 # fields and enum values, so the stand-in SDK hands the bridge real cffi data.
 _SDK_CDEF = """
 typedef enum Side { Side_Invalid, Side_Left, Side_Right, Side_Center } Side;
+typedef enum ErgonomicsDataType {
+    ErgonomicsDataType_LeftFingerIndexMCPStretch,
+    ErgonomicsDataType_RightFingerIndexMCPStretch,
+    ErgonomicsDataType_MAX_SIZE
+} ErgonomicsDataType;
 typedef int SetGloveCalibrationReturnCode;
 typedef struct ManusVec3 { float x; float y; float z; } ManusVec3;
 typedef struct ManusQuaternion { float w; float x; float y; float z; } ManusQuaternion;
@@ -364,9 +369,35 @@ typedef struct SkeletonNode { uint32_t id; ManusTransform transform; } SkeletonN
 typedef struct NodeInfo {
     uint32_t nodeId; uint32_t parentId; int chainType; Side side; int fingerJointType;
 } NodeInfo;
+typedef struct ErgonomicsData { uint32_t id; bool isUserID; float data[2]; } ErgonomicsData;
+typedef struct ErgonomicsStream {
+    ManusTimestamp publishTime; ErgonomicsData data[32]; uint32_t dataCount;
+} ErgonomicsStream;
+typedef struct RawDeviceData {
+    uint32_t id; uint32_t sensorCount; ManusTransform sensorData[5]; ManusQuaternion rotation;
+} RawDeviceData;
+typedef struct RawDeviceDataInfo {
+    ManusTimestamp publishTime; uint32_t rawDeviceDataCount;
+} RawDeviceDataInfo;
+typedef struct GloveLandscapeData {
+    uint32_t id; Side side; uint32_t batteryPercentage;
+} GloveLandscapeData;
+typedef struct DeviceLandscape {
+    uint32_t dongleCount; GloveLandscapeData gloves[32]; uint32_t gloveCount;
+} DeviceLandscape;
+typedef struct LicenseInfo { bool sdk; bool raw; bool integrated; bool linuxTarget; } LicenseInfo;
+typedef struct SettingsLandscape { LicenseInfo license; } SettingsLandscape;
+typedef struct Landscape { DeviceLandscape gloveDevices; SettingsLandscape settings; } Landscape;
+typedef struct SystemMessage { int type; char infoString[256]; uint32_t infoUInt; } SystemMessage;
 """
 # The struct each stream's callback gets.
-_CALLBACK_STRUCTS = {"raw_skeleton": "SkeletonStreamInfo"}
+_CALLBACK_STRUCTS = {
+    "raw_skeleton": "SkeletonStreamInfo",
+    "ergonomics": "ErgonomicsStream",
+    "raw_device_data": "RawDeviceDataInfo",
+    "landscape": "Landscape",
+    "system": "SystemMessage",
+}
 
 
 def _fake_manus_sdk(monkeypatch, skeletons: dict[int, np.ndarray], node_orders: dict[int, list]):
@@ -398,6 +429,7 @@ def _fake_manus_sdk(monkeypatch, skeletons: dict[int, np.ndarray], node_orders: 
 
     class Lib:
         calibration_result = 1  # SetGloveCalibrationReturnCode.Success
+        hosts = 1  # 0: the SDK finds no host (no dongle, no licence)
         calibrations: dict[int, bytes] = {}
 
         def __getattr__(self, name):
@@ -413,7 +445,7 @@ def _fake_manus_sdk(monkeypatch, skeletons: dict[int, np.ndarray], node_orders: 
             return 0
 
         def CoreSdk_GetNumberOfAvailableHostsFound(self, count):
-            count[0] = 1
+            count[0] = self.hosts
             return 0
 
         def CoreSdk_GetAvailableHostsFound(self, hosts, n):
@@ -444,6 +476,11 @@ def _fake_manus_sdk(monkeypatch, skeletons: dict[int, np.ndarray], node_orders: 
             calls.append("CoreSdk_SetGloveCalibration")
             self.calibrations[glove_id] = bytes(ffi.buffer(data, n))
             result[0] = self.calibration_result
+            return 0
+
+        def CoreSdk_GetRawDeviceData(self, i, device):
+            device.id, device.sensorCount = 100 + i, 2
+            device.sensorData[1].position.x = 0.5
             return 0
 
     class ManusSDK:
@@ -506,10 +543,12 @@ class _Running:
             self.sub.recv()
         return raw
 
-    def receive(self, n: int) -> list[bytes]:
-        got = []
-        while len(got) < n and self.sub.poll(2000):
-            got.append(self.sub.recv())
+    def receive(self, n: int, timeout_s: float = 5.0) -> list[bytes]:
+        """The next ``n`` messages, leaving out status messages (a slow machine's)."""
+        got, deadline = [], time.monotonic() + timeout_s
+        while len(got) < n and time.monotonic() < deadline:
+            if self.sub.poll(100) and wire.sdk_data(raw := self.sub.recv())[0] != "status":
+                got.append(raw)
         return got
 
     def stop(self) -> None:
@@ -555,6 +594,7 @@ def test_the_bridge_streams_sorted_hands_from_the_sdk(monkeypatch, tmp_path, cap
     log = caplog.text
     assert f"Loaded the right glove's calibration {tmp_path / 'Calibration_right.mcal'}" in log
     assert "Streaming UNCALIBRATED left glove" in log and "Calibration_left.mcal" in log
+    assert list(wire.bridge_warnings(raw)) == ["uncalibrated_left"]  # teleop hears it too
 
     expected = (landmarks - landmarks[0]) @ fake_bridge._INTO_MANUS.T
     keypoints, sides = ManusPublisher(handedness="right").keypoints_from_message(raw)
@@ -565,6 +605,10 @@ def test_the_bridge_streams_sorted_hands_from_the_sdk(monkeypatch, tmp_path, cap
         fake_bridge._INTO_MANUS.T
     )
     np.testing.assert_allclose(left_kp, mirrored, atol=1e-6)
+    stream, infos = wire.sdk_data(raw)
+    assert stream == "raw_skeleton"
+    assert infos["right"] == {"gloveId": 11, "nodesCount": 25, "publishTime": {"time": 7_000}}
+    assert infos["left"]["gloveId"] == 22
 
     assert len(messages) == 5, "a callback was dropped or merged"
     parsed = []
@@ -577,6 +621,195 @@ def test_the_bridge_streams_sorted_hands_from_the_sdk(monkeypatch, tmp_path, cap
     stamps = [m.header.stamp.sec * 1_000_000_000 + m.header.stamp.nanosec for m in parsed]
     assert before <= stamps[0] and stamps == sorted(stamps) and stamps[-1] <= after
     assert all(len(m.left_mocap_pose) == len(m.right_mocap_pose) == 25 for m in parsed)
+
+
+def test_teleop_hears_why_no_hands_come_while_the_sdk_is_not_connected(monkeypatch, tmp_path):
+    module, calls = _two_gloves(monkeypatch, _clip(1)[0])
+    module.lib.hosts = 0
+    running = _Running(module, tmp_path)
+    try:
+        status, deadline = None, time.monotonic() + 10.0
+        while status is None and time.monotonic() < deadline:
+            if running.sub.poll(500):
+                status = running.sub.recv()
+        module.lib.hosts = 1  # the dongle is in
+        hands = running.first_with_both_hands()
+    finally:
+        running.stop()
+    assert status is not None and wire.sdk_data(status)[0] == "status"
+    assert "not connected" in wire.bridge_warnings(status)["not_connected"]
+    assert "not_connected" not in wire.bridge_warnings(hands)
+    assert calls.count("CoreSdk_SetRawSkeletonHandMotion") == 1
+
+
+def test_every_sdk_stream_goes_out_unless_the_licence_lacks_its_feature(
+    monkeypatch, tmp_path, caplog
+):
+    """Ergonomics, raw device data, landscape and system messages go out as the SDK's
+    structs in JSON. A landscape without a dongle has no licence yet: nothing stops. Then
+    the licence lacks Raw, so raw device data stops with a warning and the rest goes on.
+    Teleop's publisher skips those messages."""
+    module, _ = _two_gloves(monkeypatch, _clip(1)[0])
+    caplog.set_level("INFO", logger="manus_bridge")
+    running = _Running(module, tmp_path)
+    try:
+        running.first_with_both_hands()
+        _fire(module, "landscape")  # no dongle yet, so no licence: all False
+        _fire(module, "raw_device_data", rawDeviceDataCount=1)  # still goes out
+        licence = {"sdk": True, "raw": False, "integrated": True, "linuxTarget": True}
+        _fire(
+            module,
+            "landscape",
+            gloveDevices={
+                "dongleCount": 1,
+                "gloves": [{"id": 11, "side": 2, "batteryPercentage": 80}],
+                "gloveCount": 1,
+            },
+            settings={"license": licence},
+        )
+        _fire(
+            module,
+            "ergonomics",
+            publishTime={"time": 5},
+            data=[{"id": 11, "data": [10.0, 20.123456789]}],
+            dataCount=1,
+        )
+        _fire(module, "raw_device_data", rawDeviceDataCount=2)  # not licensed: not sent
+        _fire(module, "system", type=3, infoString=b"hello", infoUInt=7)
+        _fire(module, "raw_skeleton", skeletonsCount=2)
+        messages = running.receive(6)
+    finally:
+        running.stop()
+    streams = [wire.sdk_data(raw) for raw in messages]
+    assert [name for name, _ in streams] == [
+        *("landscape", "raw_device_data", "landscape", "ergonomics", "system", "raw_skeleton")
+    ]
+    landscape, ergonomics, system = (data for _, data in streams[2:5])
+    assert landscape == {
+        "gloveDevices": {
+            "dongleCount": 1,
+            "gloves": [{"id": 11, "side": "Right", "batteryPercentage": 80}],
+            "gloveCount": 1,
+        },
+        "settings": {"license": licence},
+    }  # cut to gloveCount, the enum named
+    assert ergonomics["data"] == [
+        {
+            "id": 11,
+            "isUserID": False,
+            "data": {"LeftFingerIndexMCPStretch": 10.0, "RightFingerIndexMCPStretch": 20.123457},
+        }
+    ]
+    assert system == {"type": 3, "infoString": "hello", "infoUInt": 7}
+    assert "raw device data is not streamed: your MANUS licence does not include Raw" in caplog.text
+    assert "licence_raw_device_data" not in wire.bridge_warnings(messages[1])  # not read yet
+    for raw in messages[2:]:
+        assert "licence_raw_device_data" in wire.bridge_warnings(raw)
+    publisher = ManusPublisher(handedness="right")
+    for raw in messages[:5]:
+        assert wire.decode(raw)[1] == {}
+        assert publisher.keypoints_from_message(raw) == (None, [])
+
+
+def test_a_lost_glove_is_reported_until_it_is_back_and_teleop_hears_it_once(
+    monkeypatch, tmp_path, caplog
+):
+    """A glove that sends nothing is reported lost, in every message (a status message
+    when nothing else goes out); teleop's publisher logs it once, and once when it's back."""
+    monkeypatch.setattr(bridge, "LOST_AFTER_S", 0.3)
+    monkeypatch.setattr(bridge, "STATUS_EVERY_S", 0.5)
+    module, _ = _two_gloves(monkeypatch, _clip(1)[0])
+    (tmp_path / "Calibration_left.mcal").write_bytes(b"left")
+    (tmp_path / "Calibration_right.mcal").write_bytes(b"right")
+    running = _Running(module, tmp_path)
+    got = []
+    try:
+        running.first_with_both_hands()
+        for _ in range(30):  # 0.6 s of the right glove alone (glove 11; 22 is the left)
+            _fire(module, "raw_skeleton", skeletonsCount=1)
+            time.sleep(0.02)
+        _fire(module, "raw_skeleton", skeletonsCount=2)  # the left one is back
+        time.sleep(0.8)  # then nothing at all: status messages
+        while running.sub.poll(200):
+            got.append(running.sub.recv())
+    finally:
+        running.stop()
+    lost = [i for i, raw in enumerate(got) if "glove_22_lost" in wire.bridge_warnings(raw)]
+    back = next(i for i, raw in enumerate(got) if len(wire.decode(raw)[1]) == 2)
+    assert lost and lost[0] < back and back not in lost  # lost, then back
+    status = [raw for raw in got[back:] if wire.sdk_data(raw)[0] == "status"]
+    assert status, "no status message while nothing else went out"
+    assert {"glove_11_lost", "glove_22_lost"} <= set(wire.bridge_warnings(status[-1]))
+
+    publisher = ManusPublisher(handedness="right")
+    caplog.clear()
+    caplog.set_level("INFO", logger="orca_teleop.ingress.manus.publisher")
+    for raw in got:
+        publisher.update_warnings(raw)
+    log = [r.getMessage() for r in caplog.records]
+    assert sum("Glove bridge: No data from the left glove (22)" in m for m in log) == 2
+    assert sum("Glove bridge, cleared: No data from the left glove (22)" in m for m in log) == 1
+    assert set(publisher.warnings) == {"glove_11_lost", "glove_22_lost"}
+
+
+def test_only_a_glove_silent_for_lost_after_s_is_lost_and_its_next_frame_clears_it(
+    monkeypatch, caplog
+):
+    module, _ = _fake_manus_sdk(monkeypatch, {}, {})
+    the_bridge = bridge.ManusBridge()
+    the_bridge.ffi = module.ffi
+    rows = list(range(25))
+    the_bridge._layouts = {11: (rows, "right", rows), 22: (rows, "left", rows)}
+    the_bridge._calibrated_since = {11: 0, 22: 0}
+    now = time.monotonic()
+    the_bridge._last_seen = {11: (now, "right"), 22: (now - 2 * bridge.LOST_AFTER_S, "left")}
+    caplog.set_level("INFO", logger="manus_bridge")
+    for _ in range(3):
+        the_bridge._check_gloves()
+    assert list(the_bridge.warnings) == ["glove_22_lost"]
+    info = module.ffi.new("RawSkeletonInfo*")
+    hands, _ = the_bridge._hands(5, {22: (rows, np.zeros((25, 7)), info)})
+    assert list(hands) == ["left"] and the_bridge.warnings == {}
+    log = [r.getMessage() for r in caplog.records]
+    assert sum("No data from the left glove (22)" in m for m in log) == 1
+    assert log[-1] == "The left glove (22) is back"
+
+
+def test_the_licence_is_checked_on_each_landscape_and_never_stops_the_hands(
+    monkeypatch, tmp_path, caplog
+):
+    """A licence without SDK Integrated stops every stream but the hands, with warnings;
+    a later landscape with the full licence clears them and the streams flow again."""
+    module, _ = _two_gloves(monkeypatch, _clip(1)[0])
+    caplog.set_level("INFO", logger="manus_bridge")
+
+    def landscape(**licence):
+        full = {"sdk": True, "raw": True, "integrated": True, "linuxTarget": True}
+        devices = {"dongleCount": 1, "gloveCount": 0}
+        _fire(module, "landscape", gloveDevices=devices, settings={"license": full | licence})
+
+    running = _Running(module, tmp_path)
+    try:
+        running.first_with_both_hands()
+        landscape(integrated=False)
+        _fire(module, "raw_skeleton", skeletonsCount=2)  # the hands still go out
+        _fire(module, "ergonomics", dataCount=0)  # not licensed: not sent
+        _fire(module, "raw_device_data", rawDeviceDataCount=1)  # not licensed: not sent
+        landscape()
+        _fire(module, "raw_device_data", rawDeviceDataCount=1)
+        messages = running.receive(4)
+    finally:
+        running.stop()
+    streams = [wire.sdk_data(raw)[0] for raw in messages]
+    assert streams == ["landscape", "raw_skeleton", "landscape", "raw_device_data"]
+    blocked = {"licence_raw_skeleton", "licence_ergonomics", "licence_raw_device_data"}
+    assert blocked <= set(wire.bridge_warnings(messages[1]))
+    assert len(wire.decode(messages[1])[1]) == 2
+    assert not blocked & set(wire.bridge_warnings(messages[3]))
+    assert "raw skeleton hands may not come: your MANUS licence does not include SDK" in (
+        caplog.text
+    )
+    assert "ergonomics: the MANUS licence covers it now" in caplog.text
 
 
 def test_teleop_logs_a_bridge_warning_once_and_its_clearing_once(caplog):
@@ -617,6 +850,22 @@ def test_the_fake_bridge_sends_warnings_that_teleop_logs_once(caplog):
     assert publisher.warnings == {"uncalibrated_left": "Streaming UNCALIBRATED left"}
     log = [r.getMessage() for r in caplog.records if r.name.endswith("publisher")]
     assert log.count("Glove bridge: Streaming UNCALIBRATED left") == 1
+
+
+def test_raw_device_data_goes_out_when_licensed(monkeypatch, tmp_path):
+    module, _ = _two_gloves(monkeypatch, _clip(1)[0])
+    running = _Running(module, tmp_path)
+    try:
+        running.first_with_both_hands()
+        _fire(module, "raw_device_data", publishTime={"time": 9}, rawDeviceDataCount=2)
+        (raw,) = running.receive(1)
+    finally:
+        running.stop()
+    stream, data = wire.sdk_data(raw)
+    assert stream == "raw_device_data" and data["publishTime"] == {"time": 9}
+    assert [d["id"] for d in data["devices"]] == [100, 101]
+    sensors = data["devices"][0]["sensorData"]
+    assert len(sensors) == 2 and sensors[1]["position"]["x"] == 0.5  # cut to sensorCount
 
 
 def test_a_missing_or_rejected_calibration_streams_uncalibrated_and_says_so(
@@ -681,20 +930,24 @@ class _Socket:
         self.sent.append(raw)
 
 
-def test_every_frame_goes_out_except_those_from_before_the_calibration():
+def test_every_frame_goes_out_except_those_from_before_the_calibration(monkeypatch):
     """The publish loop sends each queued frame, in order, never merging or skipping one,
     except a calibrated glove's frames from before its .mcal was loaded."""
+    module, _ = _fake_manus_sdk(monkeypatch, {}, {})
     the_bridge = bridge.ManusBridge()
+    the_bridge.ffi = module.ffi
     rows = list(range(25))
     the_bridge._layouts = {11: (rows, "right", rows), 22: (rows, "left", rows)}
     the_bridge._calibrated_since = {11: 1_000, 22: 0}  # the left one has no .mcal
+    info = module.ffi.new("RawSkeletonInfo*")
     for t_ns in (500, 999, 1_000, 1_001, 2_000):
         nodes = np.full((25, 7), float(t_ns))
-        the_bridge._frames.put((t_ns, {11: (rows, nodes), 22: (rows, nodes)}))
+        gloves = {11: (rows, nodes, info), 22: (rows, nodes, info)}
+        the_bridge._frames.put((t_ns, "raw_skeleton", gloves))
     socket = _Socket()
     threading.Timer(0.3, the_bridge.stop).start()
     the_bridge.publish_loop(socket)
-    sent = [wire.decode(raw) for raw in socket.sent]
+    sent = [wire.decode(raw) for raw in socket.sent if wire.sdk_data(raw)[0] != "status"]
     assert [t for t, _ in sent] == [500, 999, 1_000, 1_001, 2_000]
     assert [sorted(hands) for _, hands in sent] == [["left"]] * 2 + [["left", "right"]] * 3
     for t_ns, hands in sent:
