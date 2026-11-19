@@ -5,6 +5,7 @@ import pytest
 import torch
 from conftest import KEYVECTORS_SHAPE, plausible_hand_keypoints
 
+from orca_teleop.retargeting.config import default_config_path
 from orca_teleop.retargeting.retargeter import (
     Retargeter,
     RetargeterConfig,
@@ -139,8 +140,11 @@ def test_retargeter_rejects_unknown_backend():
         Retargeter.from_paths(backend="not-a-backend")  # type: ignore[arg-type]
 
 
-def test_retargeter_dispatches_adaptive_backend(monkeypatch):
+def test_retargeter_dispatches_adaptive_backend(monkeypatch, tmp_path):
     from orca_teleop.retargeting import adaptive_analytical
+
+    config = tmp_path / "retarget.yaml"
+    config.write_text("type: adaptive_analytical\n")
 
     calls = {}
 
@@ -156,14 +160,14 @@ def test_retargeter_dispatches_adaptive_backend(monkeypatch):
         "model.yaml",
         "hand.urdf",
         backend="adaptive_analytical",
-        config_path="retarget.yaml",
+        config_path=str(config),
     )
 
     assert isinstance(retargeter, _StubAdaptive)
     assert calls == {
         "model_path": "model.yaml",
         "urdf_path": "hand.urdf",
-        "config_path": "retarget.yaml",
+        "config_path": str(config),
     }
 
 
@@ -186,5 +190,5 @@ def test_retargeter_defaults_to_adaptive_backend(monkeypatch):
     assert calls == {
         "model_path": "model.yaml",
         "urdf_path": "hand.urdf",
-        "config_path": None,
+        "config_path": default_config_path("adaptive_analytical"),
     }

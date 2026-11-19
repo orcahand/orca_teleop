@@ -67,7 +67,7 @@ def main() -> None:
         help="Retargeter backend (default: adaptive_analytical)",
     )
     parser.add_argument(
-        "--retarget-config",
+        "--retargeter-config",
         default=None,
         help="YAML config for --retargeter adaptive_analytical",
     )
@@ -98,7 +98,7 @@ def main() -> None:
             show_video=args.show_video,
             sink=sink,
             retargeter_backend=args.retargeter,
-            retargeter_config_path=args.retarget_config,
+            retargeter_config_path=args.retargeter_config,
         )
     else:
         run(
@@ -107,7 +107,7 @@ def main() -> None:
             port=args.port,
             sink=sink,
             retargeter_backend=args.retargeter,
-            retargeter_config_path=args.retarget_config,
+            retargeter_config_path=args.retargeter_config,
         )
 
 

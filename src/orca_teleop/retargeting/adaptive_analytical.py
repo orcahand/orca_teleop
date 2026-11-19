@@ -5,8 +5,6 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from importlib import resources
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -15,6 +13,7 @@ from orca_core import OrcaHand, OrcaJointPositions
 
 from orca_teleop.constants import WRIST_MOTOR_IDX
 from orca_teleop.retargeting import utils as retargeter_utils
+from orca_teleop.retargeting.config import default_config_path, load_config
 from orca_teleop.retargeting.constants import CALIBRATION_FRAMES, TIP_LANDMARK_OFFSET_M
 from orca_teleop.retargeting.retargeter import FINGERS, TargetPose
 from orca_teleop.utils import default_urdf_path, infer_model_version
@@ -68,21 +67,12 @@ def _optional_imports():
     try:
         import nlopt
         import pinocchio as pin
-        import yaml
     except ImportError as exc:
         raise RuntimeError(
             "backend='adaptive_analytical' requires optional dependencies. Install the "
             "project with its adaptive extra, e.g. `uv sync --extra adaptive`."
         ) from exc
-    return nlopt, pin, yaml
-
-
-def _default_config_path() -> Path:
-    return (
-        resources.files("orca_teleop.retargeting")
-        / "configs"
-        / "adaptive_analytical_orca_tuned.yaml"
-    )
+    return nlopt, pin
 
 
 def _huber_loss(x: np.ndarray, delta: float) -> np.ndarray:
@@ -326,7 +316,7 @@ class AdaptiveAnalyticalRetargeter:
         urdf_path: str | None,
         config_path: str | None,
     ) -> None:
-        self._nlopt, self._pin, yaml = _optional_imports()
+        self._nlopt, self._pin = _optional_imports()
 
         self._hand = OrcaHand(hand_config_path)
         self.hand_type = self._hand.config.type
@@ -338,9 +328,9 @@ class AdaptiveAnalyticalRetargeter:
             urdf_path = default_urdf_path(self.hand_type, self.model_version)
         self.urdf_path = str(urdf_path)
 
-        cfg_path = Path(config_path) if config_path is not None else _default_config_path()
-        with open(cfg_path) as f:
-            self.config: dict[str, Any] = yaml.safe_load(f)
+        if config_path is None:
+            config_path = default_config_path("adaptive_analytical")
+        self.config: dict[str, Any] = load_config(config_path)
 
         self._retarget_cfg = self.config.get("retarget", {})
         self._frame_map = self._load_frame_map(self.config)

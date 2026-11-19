@@ -1,0 +1,4 @@
+# MANUS gloves (--source manus). For now the same as the webcam's config; each change
+# here has to beat the one before it, first on replayed glove clips, then on the hand.
+type: adaptive_analytical
+base: adaptive_analytical_orca_tuned.yaml

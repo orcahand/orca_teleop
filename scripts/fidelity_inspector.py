@@ -425,7 +425,7 @@ def main() -> None:
     ap.add_argument("--model-path", default=None, help="the hand model's orca_core config.yaml")
     ap.add_argument("--urdf-path", default=None, help="URDF to solve on (default: as the pipeline)")
     ap.add_argument(
-        "--retarget-config", default=None, help="adaptive_analytical YAML (default: tuned)"
+        "--retargeter-config", default=None, help="adaptive_analytical YAML (default: tuned)"
     )
     ap.add_argument("--save-summary", default=None, metavar="JSON", help="write the summary here")
     ap.add_argument("--no-viewer", action="store_true", help="print the summary and exit")
@@ -437,13 +437,13 @@ def main() -> None:
         args.model_path,
         args.urdf_path,
         backend="adaptive_analytical",
-        config_path=args.retarget_config,
+        config_path=args.retargeter_config,
     )
     t0 = time.perf_counter()
     res = replay(rec, retargeter)
     print(f"Replayed {len(rec.frame)} frames in {time.perf_counter() - t0:.1f} s")
     summary = summarize(rec, retargeter, res)
-    summary["retarget_config"] = args.retarget_config or "default (tuned)"
+    summary["retargeter_config"] = args.retargeter_config or "default (tuned)"
     summary["urdf"] = retargeter.urdf_path
     print_summary(summary)
     if args.save_summary:

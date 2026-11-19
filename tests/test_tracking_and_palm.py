@@ -8,10 +8,10 @@ from test_fidelity import CLIP, _model_or_skip
 
 def _solver(tmp_path, name="cfg", **retarget):
     """The default config with ``retarget`` keys set (``None``: the key left out)."""
-    from orca_teleop.retargeting.adaptive_analytical import _default_config_path
+    from orca_teleop.retargeting.config import default_config_path, load_config
     from orca_teleop.retargeting.retargeter import Retargeter
 
-    cfg = yaml.safe_load(_default_config_path().read_text())
+    cfg = load_config(default_config_path("adaptive_analytical"))
     cfg["retarget"].update(retarget)
     cfg["retarget"] = {k: v for k, v in cfg["retarget"].items() if v is not None}
     path = tmp_path / f"{name}.yaml"

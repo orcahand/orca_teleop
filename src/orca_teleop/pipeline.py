@@ -790,7 +790,8 @@ def run(
         retargeter_backend: Retargeting implementation. ``"adaptive_analytical"``
             is the default Wuji-style Orca-native backend; ``"rmsprop"`` keeps
             the historical fingertip key-vector backend available.
-        retargeter_config_path: Optional YAML config for the adaptive backend.
+        retargeter_config_path: The retargeter's YAML config (``type:`` must be the
+            backend); default: the backend's packaged config (``retargeting/config.py``).
         landmark_source: Landmark convention received over gRPC. Live ``webxr``
             frames are already in the canonical 21-point layout; legacy
             ``metaquest`` HTS/Unity replays still need their historical mirror.

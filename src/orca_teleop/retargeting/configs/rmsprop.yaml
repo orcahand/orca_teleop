@@ -1,0 +1,3 @@
+# The RMSprop retargeter (--retargeter rmsprop). Its options are keyword arguments in
+# code (retargeter.RetargeterConfig); the file only names the retargeter.
+type: rmsprop

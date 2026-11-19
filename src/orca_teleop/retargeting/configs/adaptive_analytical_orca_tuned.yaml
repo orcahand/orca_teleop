@@ -1,5 +1,6 @@
-optimizer:
-  type: adaptive_analytical
+# The webcam's config, and every input's without a file of its own (retargeting/config.py).
+# The retargeter it is for: --retargeter must agree with it.
+type: adaptive_analytical
 
 retarget:
   # Solver evaluations per frame, at most. At 50 a fifth of the solves stopped unconverged, so

@@ -21,6 +21,7 @@ from orca_teleop.ingress.manus.dummy_publisher import (
 )
 from orca_teleop.ingress.server import DEFAULT_PORT, IngressServer
 from orca_teleop.pipeline import TeleopQueues, retargeter_worker
+from orca_teleop.retargeting.config import resolve
 from orca_teleop.sim import OrcaHandSimSink
 
 logger = logging.getLogger(__name__)
@@ -98,9 +99,9 @@ def main() -> None:
         help="Override dataset handedness before publishing",
     )
     parser.add_argument(
-        "--retarget-config",
+        "--retargeter-config",
         default=None,
-        help="YAML config for the adaptive analytical retargeter",
+        help="Retargeter config (default: the glove's, manus.yaml)",
     )
     parser.add_argument(
         "--hold-after-finish",
@@ -117,6 +118,10 @@ def main() -> None:
         "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"]
     )
     args = parser.parse_args()
+    try:
+        args.retargeter, args.retargeter_config = resolve(None, args.retargeter_config, "manus")
+    except (OSError, ValueError) as err:
+        parser.error(str(err))
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
@@ -183,10 +188,10 @@ def main() -> None:
                 stop_event,
                 model_path,
                 args.urdf_path,
-                "adaptive_analytical",
-                args.retarget_config,
+                args.retargeter,
+                str(args.retargeter_config),
             ),
-            name="adaptive-analytical-retargeter",
+            name="retargeter",
         )
         retargeter_thread.start()
 

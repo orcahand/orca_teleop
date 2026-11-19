@@ -596,7 +596,7 @@ def main() -> None:
         help="Retargeter backend (default: adaptive_analytical, same as teleop)",
     )
     parser.add_argument(
-        "--retarget-config",
+        "--retargeter-config",
         default=None,
         help="YAML config for --retargeter adaptive_analytical",
     )
@@ -651,7 +651,7 @@ def main() -> None:
             args.model_path,
             args.urdf_path,
             args.retargeter,
-            args.retarget_config,
+            args.retargeter_config,
         ),
         name="retargeter-diagnostic",
         daemon=True,
