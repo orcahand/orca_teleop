@@ -175,7 +175,8 @@ def _free_tcp() -> tuple[object, object, str]:
 
 
 def test_glove_frames_reach_the_ingress_server_as_landmarks():
-    """Bridge socket -> ManusPublisher (ZMQ, then gRPC) -> IngressServer's queue."""
+    """Bridge socket -> ManusPublisher (ZMQ, then gRPC) -> IngressServer's queue, with
+    another SDK stream's message right behind each hand (it must not displace the hand)."""
     landmarks_q: queue.Queue = queue.Queue(maxsize=4)
     stop = threading.Event()
     server = IngressServer(landmarks_q, stop, port=0)
@@ -190,6 +191,7 @@ def test_glove_frames_reach_the_ingress_server_as_landmarks():
         got = None
         while got is None and time.monotonic() < deadline:
             sock.send(wire.encode({"right": hand, "left": hand}, time.time_ns()))
+            sock.send(wire.encode({}, time.time_ns(), 0, "landscape", {"gloveDevices": {}}))
             try:
                 got = landmarks_q.get(timeout=0.05)
             except queue.Empty:
@@ -205,6 +207,34 @@ def test_glove_frames_reach_the_ingress_server_as_landmarks():
         sock.close()
         ctx.term()
     assert not thread.is_alive()
+
+
+def test_the_newest_hand_wins_with_other_streams_behind_it():
+    """Each hand followed by another SDK stream's message, in a burst: the publisher must
+    keep the last hand, which a conflating socket (newest message only) would lose."""
+    ctx, sock, address = _free_tcp()
+    publisher = ManusPublisher("localhost:1", "right", address)  # its ZMQ side only
+    thread = threading.Thread(target=publisher._zmq_receiver, name="zmq-receiver")
+    thread.start()
+    hand = fake_bridge.landmarks_to_wire(fake_bridge.made_up_hand(1.0))
+    try:
+        deadline = time.monotonic() + 10.0
+        while not publisher._fresh.is_set() and time.monotonic() < deadline:
+            sock.send(wire.encode({"right": hand}, time.time_ns()))
+            time.sleep(0.02)
+        assert publisher._fresh.is_set(), "the publisher never got a hand"
+        for i in range(1, 21):
+            sock.send(wire.encode({"right": hand * (1 + i / 100)}, time.time_ns()))
+            sock.send(wire.encode({}, time.time_ns(), 0, "ergonomics", {"data": []}))
+        time.sleep(0.5)
+        with publisher._lock:
+            latest = publisher._latest_keypoints
+        np.testing.assert_allclose(latest, conversion.wire_to_keypoints(hand * 1.2), atol=1e-6)
+    finally:
+        publisher.stop()
+        thread.join(timeout=5.0)
+        sock.close()
+        ctx.term()
 
 
 def test_a_glove_stream_that_fails_ends_the_publisher():
@@ -547,6 +577,46 @@ def test_the_bridge_streams_sorted_hands_from_the_sdk(monkeypatch, tmp_path, cap
     stamps = [m.header.stamp.sec * 1_000_000_000 + m.header.stamp.nanosec for m in parsed]
     assert before <= stamps[0] and stamps == sorted(stamps) and stamps[-1] <= after
     assert all(len(m.left_mocap_pose) == len(m.right_mocap_pose) == 25 for m in parsed)
+
+
+def test_teleop_logs_a_bridge_warning_once_and_its_clearing_once(caplog):
+    publisher = ManusPublisher(handedness="right")
+    hand = fake_bridge.landmarks_to_wire(fake_bridge.made_up_hand(0.0))
+    warned = wire.encode({"right": hand}, 0, warnings={"uncalibrated_left": "UNCALIBRATED left"})
+    plain = wire.encode({"right": hand}, 0)
+    caplog.set_level("INFO", logger="orca_teleop.ingress.manus.publisher")
+    for raw in [plain] * 3 + [warned] * 100 + [plain] * 100:
+        publisher.update_warnings(raw)
+        if raw is warned:
+            assert publisher.warnings == {"uncalibrated_left": "UNCALIBRATED left"}
+    assert [r.getMessage() for r in caplog.records] == [
+        "Glove bridge: UNCALIBRATED left",
+        "Glove bridge, cleared: UNCALIBRATED left",
+    ]
+    assert publisher.warnings == {}
+
+
+def test_the_fake_bridge_sends_warnings_that_teleop_logs_once(caplog):
+    if not CLIP.exists():
+        pytest.skip("tests/data/pinch_clip.npz is missing")
+    probe_ctx, probe, address = _free_tcp()
+    probe.close()
+    probe_ctx.term()
+    publisher = ManusPublisher("localhost:1", "right", address)  # its ZMQ side only
+    receiver = threading.Thread(target=publisher._zmq_receiver, name="zmq-receiver")
+    receiver.start()
+    caplog.set_level("WARNING", logger="orca_teleop.ingress.manus.publisher")
+    args = ["--landmarks", str(CLIP), "--rate", "500", "--bind", address]
+    try:
+        fake_bridge.main([*args, "--warning", "uncalibrated_left=Streaming UNCALIBRATED left"])
+        time.sleep(0.2)
+    finally:
+        publisher.stop()
+        receiver.join(timeout=5.0)
+    assert publisher._fresh.is_set(), "no hand reached the publisher"
+    assert publisher.warnings == {"uncalibrated_left": "Streaming UNCALIBRATED left"}
+    log = [r.getMessage() for r in caplog.records if r.name.endswith("publisher")]
+    assert log.count("Glove bridge: Streaming UNCALIBRATED left") == 1
 
 
 def test_a_missing_or_rejected_calibration_streams_uncalibrated_and_says_so(

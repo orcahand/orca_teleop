@@ -11,6 +11,8 @@ the publisher and everything after it can't tell the difference:
   ``tests/data``) turned into a glove skeleton turned into MANUS's frame (Z up), at
   ``--rate``.
 
+``--warning CODE=TEXT`` sends a bridge warning with every frame, as ``bridge.py`` does.
+
 Then ``orca-teleop-urdf --source manus`` (or ``orca-teleop-hand --source manus
 --dry-run``) shows the robot following it.
 """
@@ -111,10 +113,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--rate", type=float, default=90.0, help="frames/s (default: 90)")
     parser.add_argument("--loop", action="store_true", help="start over at the end")
     parser.add_argument(
+        "--warning", action="append", default=[], metavar="CODE=TEXT", help="a bridge warning"
+    )
+    parser.add_argument(
         "--bind", default=f"tcp://127.0.0.1:{wire.DEFAULT_PORT}", help="ZMQ address to publish on"
     )
     args = parser.parse_args(argv)
     args.bind = wire.zmq_address(args.bind)
+    if bad := [warning for warning in args.warning if "=" not in warning]:
+        parser.error(f"--warning takes CODE=TEXT, got {bad}")
+    warnings = dict(warning.partition("=")[::2] for warning in args.warning)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s | %(message)s")
 
     import zmq
@@ -130,7 +138,7 @@ def main(argv: list[str] | None = None) -> None:
             start = time.monotonic()
             for t_s, hands in frames(args):
                 time.sleep(max(0.0, start + t_s - time.monotonic()))
-                socket.send(wire.encode(hands, time.time_ns(), sent))
+                socket.send(wire.encode(hands, time.time_ns(), sent, warnings=warnings))
                 sent += 1
             if not args.loop:
                 break

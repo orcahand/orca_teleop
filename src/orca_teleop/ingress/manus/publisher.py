@@ -4,7 +4,8 @@ Subscribes to a glove bridge's ``GloveState`` stream (``bridge.py`` on the compu
 with the gloves, the legacy ``manus-client run``, or ``fake_bridge.py``), takes one
 hand's 25 skeleton nodes, turns them into the retargeter's 21 landmarks
 (``conversion``) and streams them to the ``IngressServer`` like any other publisher.
-The newest glove frame wins.
+The newest glove frame wins. The bridge's warnings (licence, an uncalibrated or lost
+glove) are logged once when they appear and once when they clear; ``warnings`` has them.
 
 Usage::
 
@@ -53,9 +54,29 @@ class ManusPublisher:
         self._latest_keypoints: np.ndarray | None = None
         self._fresh = threading.Event()
         self._stop = threading.Event()
+        self._warnings: dict[str, str] = {}
 
     def stop(self) -> None:
         self._stop.set()
+
+    @property
+    def warnings(self) -> dict[str, str]:
+        """The glove bridge's active warnings (code -> text), as of its last message."""
+        with self._lock:
+            return dict(self._warnings)
+
+    def update_warnings(self, raw: bytes) -> None:
+        """Take a bridge message's warnings: log each new one, and each cleared one, once."""
+        current = wire.bridge_warnings(raw)
+        if current == self._warnings:
+            return
+        for code, text in current.items():
+            if self._warnings.get(code) != text:
+                logger.warning("Glove bridge: %s", text)
+        for code in self._warnings.keys() - current.keys():
+            logger.info("Glove bridge, cleared: %s", self._warnings[code])
+        with self._lock:
+            self._warnings = current
 
     def keypoints_from_message(self, raw: bytes) -> tuple[np.ndarray | None, list[str]]:
         """This hand's ``(21, 3)`` landmarks from one bridge message (None if it has none),
@@ -76,7 +97,9 @@ class ManusPublisher:
         received, used, other_sides, problems = 0, 0, set(), set()
         t_log = time.monotonic()
         try:
-            sub.setsockopt(zmq.CONFLATE, 1)
+            # Every message in turn, the newest hand winning (no CONFLATE): the bridge sends
+            # its other SDK streams on this socket too, and conflating could keep one of
+            # those in place of a hand.
             sub.setsockopt_string(zmq.SUBSCRIBE, "")
             sub.connect(self._zmq_address)
             logger.info("Listening for MANUS glove frames on %s", self._zmq_address)
@@ -84,7 +107,8 @@ class ManusPublisher:
                 if sub.poll(timeout=100):
                     raw = sub.recv()
                     received += 1
-                    try:
+                    try:  # the warnings first: a hand that fails must not hide them
+                        self.update_warnings(raw)
                         keypoints, sides = self.keypoints_from_message(raw)
                     except Exception as err:  # a bad message must not end the stream
                         problems.add(str(err))
@@ -106,10 +130,13 @@ class ManusPublisher:
                         )
                     elif used == 0:
                         logger.warning(
-                            "Glove frames arrive, but none for the %s hand (hands: %s%s)",
+                            "Bridge messages arrive, but none for the %s hand (hands: %s%s%s)",
                             self._handedness,
                             sorted(other_sides) or "none",
                             f"; problems: {sorted(problems)}" if problems else "",
+                            f"; bridge warnings: {list(self._warnings.values())}"
+                            if self._warnings
+                            else "",
                         )
                     received, used, other_sides, problems = 0, 0, set(), set()
                     t_log = now
