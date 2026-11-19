@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import pathlib
 import queue
+import socket
 import subprocess
 import sys
 import threading
@@ -175,15 +176,19 @@ def _free_tcp() -> tuple[object, object, str]:
     return ctx, sock, sock.getsockopt_string(zmq.LAST_ENDPOINT)
 
 
-def test_glove_frames_reach_the_ingress_server_as_landmarks():
+@pytest.mark.parametrize("host", ["localhost", "[::1]"])
+def test_glove_frames_reach_the_ingress_server_as_landmarks(host):
     """Bridge socket -> ManusPublisher (ZMQ, then gRPC) -> IngressServer's queue, with
-    another SDK stream's message right behind each hand (it must not displace the hand)."""
+    another SDK stream's message right behind each hand (it must not displace the hand).
+    The server address may be a name or an IPv6 address in brackets."""
+    if host == "[::1]" and not socket.has_ipv6:
+        pytest.skip("no IPv6 on this computer")
     landmarks_q: queue.Queue = queue.Queue(maxsize=4)
     stop = threading.Event()
     server = IngressServer(landmarks_q, stop, port=0)
     port = server.start()
     ctx, sock, address = _free_tcp()
-    publisher = ManusPublisher(f"localhost:{port}", "right", address)
+    publisher = ManusPublisher(f"{host}:{port}", "right", address)
     thread = threading.Thread(target=publisher.run, name="manus-publisher")
     thread.start()
     hand = fake_bridge.landmarks_to_wire(fake_bridge.made_up_hand(1.0))
@@ -851,9 +856,7 @@ def test_the_licence_is_checked_on_each_landscape_and_never_stops_a_stream(
     assert len(wire.decode(messages[1])[1]) == 2
     assert not lacking & set(wire.bridge_warnings(messages[5]))
     assert "no_glove" in wire.bridge_warnings(messages[1])  # the landscapes list no glove
-    assert "raw skeleton may not come: your MANUS licence does not include SDK" in (
-        caplog.text
-    )
+    assert "raw skeleton may not come: your MANUS licence does not include SDK" in (caplog.text)
     assert "ergonomics: the MANUS licence covers it now" in caplog.text
 
 

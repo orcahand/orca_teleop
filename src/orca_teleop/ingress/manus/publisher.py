@@ -175,6 +175,7 @@ class ManusPublisher:
         # A plain TCP probe every 0.1 s, as the webcam publisher does: a refused gRPC connect
         # backs off for seconds, which can pass the deadline after the server is up.
         host, _, port = self._server_address.rpartition(":")
+        host = host.strip("[]")  # an IPv6 address comes as [::1]:PORT
         deadline = time.monotonic() + CONNECT_TIMEOUT_S
         while True:
             try:
