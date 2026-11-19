@@ -223,6 +223,9 @@ that the bridge runs, the address, and the SSH tunnel or firewall.
   runs: only one program can hold the MANUS SDK connection. Stop the other one.
 - **The bridge stops or restarts while teleop runs:** the robot hand holds its last
   pose, and teleop continues by itself when the bridge is back.
+- **The bridge's memory grows** by about 0.7 GB per hour. The MANUS SDK (3.2.1) does
+  this by itself once it connects, also without the bridge; the older `manus-client`
+  grows faster. Restart the bridge between long sessions (teleop continues by itself).
 
 ### Test without gloves
 
