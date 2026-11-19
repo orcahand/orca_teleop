@@ -52,6 +52,7 @@ from orca_teleop.cameras import CameraManager, OpenCVCameraConfig
 from orca_teleop.constants import (
     DEFAULT_CONFIDENCE,
     DEFAULT_HAND,
+    DEFAULT_MANUS_ADDRESS,
     DEFAULT_PORT,
     HEARTBEAT_INTERVAL,
     JOIN_TIMEOUT,
@@ -986,81 +987,65 @@ def run_local(
         publisher_process.join(timeout=3.0)
 
 
-def _manus_publisher(
-    port: int,
-    handedness: str,
-    zmq_address: str,
-) -> None:
-    """Entry point for the Manus publisher subprocess."""
-    from orca_teleop.ingress.manus.publisher import ManusPublisher
+def run_with_publisher(target: Any, args: tuple, name: str, **run_kwargs: Any) -> None:
+    """Start a local publisher process (``target(*args)``), then ``run()``; stop when it dies.
 
-    server_address = f"localhost:{port}"
-    deadline = time.monotonic() + 10.0
-
-    while True:
-        try:
-            with socket.create_connection(tuple(server_address.split(":")), timeout=0.5):
-                break
-        except OSError as err:
-            if time.monotonic() >= deadline:
-                raise RuntimeError(
-                    f"Ingress server on {server_address} did not become ready"
-                ) from err
-            time.sleep(0.1)
-
-    publisher = ManusPublisher(
-        server_address=server_address,
-        handedness=handedness,
-        zmq_address=zmq_address,
-    )
-    publisher.run()
-
-
-def run_manus_local(
-    model_path: str | None = None,
-    urdf_path: str | None = None,
-    port: int = DEFAULT_PORT,
-    handedness: str = DEFAULT_HAND,
-    zmq_address: str = "tcp://127.0.0.1:2044",
-    sink: RobotSink | None = None,
-    visualize_landmarks: bool = False,
-) -> None:
-    """Run ``run()`` plus a local Manus ZMQ→gRPC publisher for one-command teleop."""
+    The publisher runs in a child process so its device (camera, socket) stays out of
+    the robot side's threads. If it exits, the session ends; when the session ends
+    first, the publisher is ended.
+    """
     import multiprocessing
 
-    print(
-        "\033[93mPrerequisite: run 'manus-client run' in a separate terminal before "
-        "starting the Manus teleop pipeline. The Manus SDK client must be streaming "
-        "glove data over ZMQ for this pipeline to receive frames.\033[0m"
+    publisher_process = multiprocessing.get_context("spawn").Process(
+        target=target, args=args, name=name, daemon=True
     )
-
-    publisher_process = multiprocessing.Process(
-        target=_manus_publisher,
-        args=(port, handedness, zmq_address),
-        name="manus-publisher",
-        daemon=True,
-    )
-
     publisher_process.start()
-    logger.info(
-        "Local Manus publisher started (pid=%d, hand=%s, zmq=%s)",
-        publisher_process.pid,
-        handedness,
-        zmq_address,
-    )
+    logger.info("Local %s started (pid=%d)", name, publisher_process.pid)
 
+    stop_event = threading.Event()
+    _stop_when_dead(publisher_process, stop_event, name)
     try:
-        run(
-            model_path=model_path,
-            urdf_path=urdf_path,
-            port=port,
-            sink=sink,
-            visualize_landmarks=visualize_landmarks,
-        )
+        run(stop_event=stop_event, **run_kwargs)
     finally:
+        stop_event.set()
         if publisher_process.is_alive():
             publisher_process.terminate()
         publisher_process.join(timeout=3.0)
+
+
+def _manus_publisher(
+    port: int, handedness: str, zmq_address: str, log_level: int = logging.INFO
+) -> None:
+    """Entry point for the MANUS publisher subprocess. A spawned process starts without
+    logging, so it sets it up as teleop's own: the bridge's warnings, and their clearing,
+    show in teleop's log."""
+    from orca_teleop.ingress.manus.publisher import ManusPublisher
+
+    logging.basicConfig(
+        level=log_level, format="%(asctime)s %(name)s | %(message)s", datefmt="%H:%M:%S"
+    )
+    ManusPublisher(f"localhost:{port}", handedness, zmq_address).run()
+
+
+def run_manus_local(
+    handedness: str = DEFAULT_HAND,
+    zmq_address: str = DEFAULT_MANUS_ADDRESS,
+    port: int = DEFAULT_PORT,
+    **run_kwargs: Any,
+) -> None:
+    """Run ``run()`` plus a local MANUS publisher, which listens to a glove bridge.
+
+    The bridge (``ingress/manus/bridge.py``, on the computer with the gloves) must be
+    sending on ``zmq_address``; the publisher's log says so while nothing arrives.
+    """
+    logger.info("MANUS publisher: glove bridge %s, %s hand", zmq_address, handedness)
+    run_with_publisher(
+        _manus_publisher,
+        (port, handedness, zmq_address, logging.getLogger().getEffectiveLevel()),
+        "manus-publisher",
+        port=port,
+        **run_kwargs,
+    )
 
 
 def run_metaquest_local(
@@ -1152,9 +1137,9 @@ if __name__ == "__main__":
         help="Input source (default: mediapipe)",
     )
     parser.add_argument(
-        "--zmq-address",
-        default="tcp://127.0.0.1:2044",
-        help="ZMQ address for Manus C++ client (default: tcp://127.0.0.1:2044)",
+        "--glove-address",
+        default=DEFAULT_MANUS_ADDRESS,
+        help=f"The MANUS glove bridge, [tcp://]HOST:PORT (default: {DEFAULT_MANUS_ADDRESS})",
     )
     parser.add_argument(
         "--confidence", type=float, default=0.7, help="MediaPipe confidence (default: 0.7)"
@@ -1189,12 +1174,14 @@ if __name__ == "__main__":
 
     if args.source == "manus":
         run_manus_local(
-            args.model_path,
-            args.urdf_path,
+            model_path=args.model_path,
+            urdf_path=args.urdf_path,
             port=args.port,
             handedness=args.hand,
-            zmq_address=args.zmq_address,
+            zmq_address=args.glove_address,
             visualize_landmarks=args.visualize_landmarks,
+            retargeter_backend=args.retargeter,
+            retargeter_config_path=args.retarget_config,
         )
     else:
         run_local(

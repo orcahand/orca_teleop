@@ -1,11 +1,11 @@
 """Teleoperate the simulated ORCA hand via the Manus glove pipeline.
 
-Start SharpaManusClient.out first, then run this script. It launches a
-Manus ZMQ→gRPC publisher and the full retargeting pipeline against an
-``orca_sim`` Gymnasium env.
+Start the glove bridge (``ingress/manus/bridge.py``, or ``fake_bridge`` without
+gloves) first, then run this script. It launches a MANUS ZMQ→gRPC publisher and the
+full retargeting pipeline against an ``orca_sim`` Gymnasium env.
 
 Examples:
-    # Default: right hand sim, expects Manus C++ client on tcp://127.0.0.1:2044
+    # Default: right hand sim, expects the glove bridge on tcp://127.0.0.1:2044
     python scripts/manus_test.py
 
     # Left hand, custom ZMQ address

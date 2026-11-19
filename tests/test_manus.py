@@ -679,3 +679,20 @@ def test_ctrl_c_ends_the_stream_cleanly(caplog):
         ctx.term()
         stop.set()
         server.stop()
+
+
+def test_source_manus_runs_the_manus_publisher_on_the_given_bridge(monkeypatch):
+    from orca_teleop import cli
+
+    got = {}
+    monkeypatch.setattr(cli, "run_manus_local", lambda **kwargs: got.update(kwargs))
+    monkeypatch.setattr(cli, "run_local", None)  # the webcam must not start
+    args = cli._common_parser("test").parse_args(
+        ["--source", "manus", "--glove-address", "10.0.0.2:2044"]
+    )
+    sink = object()
+    cli._launch(args, sink, "right")
+    assert got["zmq_address"] == "10.0.0.2:2044" and got["handedness"] == "right"
+    assert got["sink"] is sink
+    with pytest.raises(SystemExit, match="webcam only"):
+        cli._launch(args.__class__(**{**vars(args), "record": "out"}), sink, "right")

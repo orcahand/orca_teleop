@@ -12,8 +12,9 @@ import argparse
 import importlib.metadata
 import logging
 
+from orca_teleop.constants import DEFAULT_MANUS_ADDRESS
 from orca_teleop.ingress.server import DEFAULT_PORT
-from orca_teleop.pipeline import OrcaHandSink, run, run_local
+from orca_teleop.pipeline import OrcaHandSink, run, run_local, run_manus_local
 
 logger = logging.getLogger("orca_teleop")
 
@@ -35,7 +36,18 @@ def _common_parser(description: str) -> argparse.ArgumentParser:
         "--local",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Launch a local MediaPipe publisher (default: on; --no-local to wait for one)",
+        help="Launch a local publisher (default: on; --no-local to wait for one)",
+    )
+    parser.add_argument(
+        "--source",
+        default="mediapipe",
+        choices=sorted(SOURCES),
+        help="Local publisher: mediapipe (the webcam) or manus (MANUS gloves, via their bridge)",
+    )
+    parser.add_argument(
+        "--glove-address",
+        default=DEFAULT_MANUS_ADDRESS,
+        help=f"The MANUS glove bridge, [tcp://]HOST:PORT (default: {DEFAULT_MANUS_ADDRESS})",
     )
     parser.add_argument(
         "--confidence", type=float, default=0.7, help="MediaPipe confidence (default: 0.7)"
@@ -73,6 +85,27 @@ def _configure_logging(level: str) -> None:
     )
 
 
+def _run_mediapipe(args, handedness: str, common: dict) -> None:
+    run_local(
+        handedness=handedness,
+        confidence=args.confidence,
+        show_video=args.show_video,
+        camera_index=args.camera_index,
+        record_dir=args.record,
+        **common,
+    )
+
+
+def _run_manus(args, handedness: str, common: dict) -> None:
+    if args.record:
+        raise SystemExit("--record records the webcam only (--source mediapipe)")
+    run_manus_local(handedness=handedness, zmq_address=args.glove_address, **common)
+
+
+# --source: each local publisher by name.
+SOURCES = {"mediapipe": _run_mediapipe, "manus": _run_manus}
+
+
 def _launch(args, sink, handedness: str) -> None:
     common = dict(
         model_path=args.model_path,
@@ -83,23 +116,16 @@ def _launch(args, sink, handedness: str) -> None:
         retargeter_config_path=args.retarget_config,
     )
     if args.record and not args.local:
-        raise SystemExit("--record records the local webcam publisher; drop --no-local")
+        raise SystemExit("--record records the local publisher; drop --no-local")
     if args.local:
-        run_local(
-            handedness=handedness,
-            confidence=args.confidence,
-            show_video=args.show_video,
-            camera_index=args.camera_index,
-            record_dir=args.record,
-            **common,
-        )
+        SOURCES[args.source](args, handedness, common)
     else:
         run(**common)
 
 
 def teleop_hand(argv: list[str] | None = None) -> None:
     """Teleoperate a physical ORCA hand."""
-    parser = _common_parser("Teleoperate a physical ORCA hand from a webcam.")
+    parser = _common_parser("Teleoperate a physical ORCA hand from a webcam or MANUS gloves.")
     parser.add_argument(
         "--home",
         action="store_true",
@@ -180,7 +206,9 @@ def teleop_urdf(argv: list[str] | None = None) -> None:
     """Teleoperate a kinematic URDF viewer instead of hardware."""
     from orca_teleop.urdf_viz import OrcaHandUrdfVizSink
 
-    parser = _common_parser("Teleoperate a kinematic ORCA URDF viewer from a webcam.")
+    parser = _common_parser(
+        "Teleoperate a kinematic ORCA URDF viewer from a webcam or MANUS gloves."
+    )
     parser.add_argument(
         "--version", default="v2", help="Embodiment version for default paths (default: v2)"
     )
