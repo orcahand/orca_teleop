@@ -20,6 +20,7 @@ import time
 import numpy as np
 import pytest
 
+from orca_teleop.constants import DEFAULT_MANUS_ADDRESS
 from orca_teleop.ingress.manus import bridge, conversion, fake_bridge, wire
 from orca_teleop.ingress.manus.publisher import ManusPublisher
 from orca_teleop.ingress.server import HandLandmarks, IngressServer, landmark_problem
@@ -754,10 +755,10 @@ def test_a_lost_glove_is_reported_until_it_is_back_and_teleop_hears_it_once(
 
 
 def test_only_a_glove_silent_for_lost_after_s_is_lost_and_its_next_frame_clears_it(
-    monkeypatch, caplog
+    monkeypatch, caplog, tmp_path
 ):
     module, _ = _fake_manus_sdk(monkeypatch, {}, {})
-    the_bridge = bridge.ManusBridge()
+    the_bridge = bridge.ManusBridge(calibration_dir=tmp_path)
     the_bridge.ffi = module.ffi
     rows = list(range(25))
     the_bridge._layouts = {11: (rows, "right", rows), 22: (rows, "left", rows)}
@@ -769,11 +770,49 @@ def test_only_a_glove_silent_for_lost_after_s_is_lost_and_its_next_frame_clears_
         the_bridge._check_gloves()
     assert list(the_bridge.warnings) == ["glove_22_lost"]
     info = module.ffi.new("RawSkeletonInfo*")
-    hands, _ = the_bridge._hands(5, {22: (rows, np.zeros((25, 7)), info)})
-    assert list(hands) == ["left"] and the_bridge.warnings == {}
+    hands, _ = the_bridge._hands({22: (rows, np.zeros((25, 7)), info)})
+    # back, it tries its .mcal again (none in tmp_path: uncalibrated, said so)
+    assert list(hands) == ["left"] and list(the_bridge.warnings) == ["uncalibrated_left"]
     log = [r.getMessage() for r in caplog.records]
     assert sum("No data from the left glove (22)" in m for m in log) == 1
-    assert log[-1] == "The left glove (22) is back"
+    assert "The left glove (22) is back" in log
+
+
+def test_two_gloves_on_one_side_send_the_first_and_say_so(monkeypatch, caplog):
+    module, _ = _fake_manus_sdk(monkeypatch, {}, {})
+    the_bridge = bridge.ManusBridge()
+    the_bridge.ffi = module.ffi
+    rows = list(range(25))
+    the_bridge._layouts = {11: (rows, "right", rows), 33: (rows, "right", rows)}
+    the_bridge._calibrated_since = {11: 0, 33: 0}
+    info = module.ffi.new("RawSkeletonInfo*")
+    first, second = np.zeros((25, 7)), np.ones((25, 7))
+    hands, _ = the_bridge._hands({11: (rows, first, info), 33: (rows, second, info)})
+    assert list(hands) == ["right"] and np.all(hands["right"] == 0)
+    assert "same_side_right" in the_bridge.warnings
+    the_bridge._hands({11: (rows, first, info)})
+    assert "same_side_right" not in the_bridge.warnings
+
+
+def test_a_hand_frame_that_waited_too_long_is_skipped_and_reported(monkeypatch):
+    module, _ = _fake_manus_sdk(monkeypatch, {}, {})
+    monkeypatch.setattr(bridge, "_STATS_EVERY_S", 0.0)
+    the_bridge = bridge.ManusBridge()
+    the_bridge.ffi = module.ffi
+    rows = list(range(25))
+    the_bridge._layouts = {11: (rows, "right", rows)}
+    the_bridge._calibrated_since = {11: 0}
+    info = module.ffi.new("RawSkeletonInfo*")
+    now = time.monotonic()
+    for t_ns, queued in ((1, now - 1.0), (2, now)):
+        gloves = {11: (rows, np.full((25, 7), float(t_ns)), info)}
+        the_bridge._frames.put((t_ns, queued, "raw_skeleton", gloves))
+    socket = _Socket()
+    threading.Timer(0.3, the_bridge.stop).start()
+    the_bridge.publish_loop(socket)
+    sent = [wire.decode(raw) for raw in socket.sent if wire.sdk_data(raw)[0] != "status"]
+    assert [t for t, _ in sent] == [2]
+    assert "falling_behind" in the_bridge.warnings
 
 
 def test_the_licence_is_checked_on_each_landscape_and_never_stops_a_stream(
@@ -811,6 +850,7 @@ def test_the_licence_is_checked_on_each_landscape_and_never_stops_a_stream(
         assert lacking <= set(wire.bridge_warnings(raw))
     assert len(wire.decode(messages[1])[1]) == 2
     assert not lacking & set(wire.bridge_warnings(messages[5]))
+    assert "no_glove" in wire.bridge_warnings(messages[1])  # the landscapes list no glove
     assert "raw skeleton may not come: your MANUS licence does not include SDK" in (
         caplog.text
     )
@@ -900,6 +940,7 @@ def test_a_missing_or_rejected_calibration_streams_uncalibrated_and_says_so(
     before = time.time_ns()
     the_bridge._load_calibration(7, "right")
     assert the_bridge._calibrated_since[7] >= before
+    assert "uncalibrated_right" not in the_bridge.warnings  # a loaded .mcal clears it
     assert "Loaded the right glove's calibration" in caplog.text and "Success" in caplog.text
 
 
@@ -948,7 +989,7 @@ def test_every_frame_goes_out_in_order(monkeypatch):
     for t_ns in (500, 999, 1_000, 1_001, 2_000):
         nodes = np.full((25, 7), float(t_ns))
         gloves = {11: (rows, nodes, info), 22: (rows, nodes, info)}
-        the_bridge._frames.put((t_ns, "raw_skeleton", gloves))
+        the_bridge._frames.put((t_ns, time.monotonic(), "raw_skeleton", gloves))
     socket = _Socket()
     threading.Timer(0.3, the_bridge.stop).start()
     the_bridge.publish_loop(socket)
@@ -1025,3 +1066,20 @@ def test_source_manus_runs_the_manus_publisher_on_the_given_bridge(monkeypatch):
     assert got["sink"] is sink
     with pytest.raises(SystemExit, match="webcam only"):
         cli._launch(args.__class__(**{**vars(args), "record": "out"}), sink, "right")
+    with pytest.raises(SystemExit, match="would do nothing"):  # --no-local ignores the source
+        cli._launch(args.__class__(**{**vars(args), "local": False}), sink, "right")
+    webcam = cli._common_parser("test").parse_args(["--glove-address", "10.0.0.2:2044"])
+    with pytest.raises(SystemExit, match="for --source manus"):
+        cli._launch(webcam, sink, "right")
+    plain = cli._common_parser("test").parse_args(["--source", "manus"])
+    cli._launch(plain, sink, "right")
+    assert got["zmq_address"] == DEFAULT_MANUS_ADDRESS
+
+
+def test_more_than_25_nodes_use_the_first_25():
+    nodes = np.random.default_rng(0).normal(size=(27, 3))
+    assert np.array_equal(
+        conversion.wire_to_keypoints(nodes), conversion.wire_to_keypoints(nodes[:25])
+    )
+    with pytest.raises(ValueError):
+        conversion.wire_to_keypoints(nodes[:24])

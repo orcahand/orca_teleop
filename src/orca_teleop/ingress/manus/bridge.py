@@ -1,8 +1,10 @@
 """MANUS glove bridge: MANUS SDK (Linux, integrated mode) -> ``GloveState`` messages on ZMQ.
 
 Runs on the Linux computer the gloves' dongle is plugged into; the MANUS SDK drives the
-dongle itself (no MANUS Core). Teleop on any computer listens to it with
-``orca-teleop-hand --source manus --glove-address <this computer>:2044``.
+dongle itself (no MANUS Core). Teleop on this computer listens to it with
+``orca-teleop-hand --source manus``; on another computer, through an SSH tunnel to port
+2044, or with ``--bind tcp://0.0.0.0:2044`` here and ``--glove-address <this computer>:2044``
+there (README, MANUS gloves).
 
 Needs only this folder (``bridge.py``, ``conversion.py``, ``wire.py``, ``source/``), cffi,
 numpy, pyzmq, protobuf, and the MANUS SDK's ``Python`` folder on ``PYTHONPATH``.
@@ -11,12 +13,14 @@ Every SDK callback goes out as one message, unfiltered and at the SDK's rate, st
 this computer's clock (Unix ns). Raw skeleton messages hold the hands: 25 nodes each, in
 ``conversion.MANUS_NODE_NAMES`` order, sorted by the SDK's node labels (``NodeInfo`` chain
 and joint type), never by the SDK's undocumented array order. Every stream in ``STREAMS``
-also carries the SDK's own structs as JSON (``wire.sdk_data``), unless the licence lacks
-the feature it needs. Each glove loads its wearer's calibration, ``Calibration_left.mcal``
-or ``Calibration_right.mcal`` in ``--calibration-dir``, as the C++ manus-client does.
+also carries the SDK's own structs as JSON (``wire.sdk_data``); a licence that lacks a
+feature a stream needs gets a warning, and the stream goes out whenever the SDK gives it.
+Each glove loads its wearer's calibration, ``Calibration_left.mcal`` or
+``Calibration_right.mcal`` in ``--calibration-dir``, as the C++ manus-client does.
 Every message also carries the bridge's active warnings (``wire.bridge_warnings``: the SDK
-not connected, licence, uncalibrated or lost glove), and a status message carries them at
-least once a second, so a teleop that connects later, or gets no hands, hears them too.
+not connected, no glove, licence, uncalibrated, lost or doubled glove, falling behind), and
+a status message carries them at least once a second, so a teleop that connects later, or
+gets no hands, hears them too.
 """
 
 from __future__ import annotations
@@ -70,6 +74,8 @@ _LOCALE_VARS = ("LANG", "LC_ALL", "LC_MESSAGES", "LANGUAGE")
 _STATS_EVERY_S = 5.0
 LOST_AFTER_S = 1.0  # a glove that sends nothing this long is reported lost
 STATUS_EVERY_S = 1.0  # with nothing else to send, a status message this often
+STALE_S = 0.1  # a hand frame this old when its turn comes is skipped: a newer one waits
+CALIBRATION_RETRY_S = 5.0  # an uncalibrated glove tries its .mcal again this often
 
 
 def sort_nodes(infos: list[tuple], node_ids: list[int]) -> tuple[str, list[int]]:
@@ -170,10 +176,11 @@ class ManusBridge:
     def __init__(self, bind: str = DEFAULT_BIND, calibration_dir: str | Path = "."):
         self.bind = bind
         self.calibration_dir = Path(calibration_dir)
-        # (t_ns, stream, the SDK's data, copied) per SDK callback, in order.
+        # (t_ns, monotonic s, stream, the SDK's data, copied) per SDK callback, in order.
         self._frames: queue.SimpleQueue = queue.SimpleQueue()
         self._layouts: dict[int, tuple[list[int], str, list[int]]] = {}  # ids, side, rows
         self._calibrated_since: dict[int, int] = {}  # glove id -> t_ns; 0: none loaded
+        self._calibration_tried: dict[int, float] = {}  # glove id -> monotonic s of the last try
         self._licence_logged = False
         self._last_seen: dict[int, tuple[float, str]] = {}  # glove id -> (monotonic, side)
         self._sent, self._t_sent = 0, time.monotonic()  # messages sent, and when the last
@@ -277,7 +284,7 @@ class ManusBridge:
                     info,
                 )
             if gloves:
-                self._frames.put((t_ns, "raw_skeleton", gloves))
+                self._frames.put((t_ns, time.monotonic(), "raw_skeleton", gloves))
         except Exception:  # never raise into the SDK's thread
             logger.exception("Error reading a MANUS skeleton")
 
@@ -289,7 +296,8 @@ class ManusBridge:
                 device = self.ffi.new("RawDeviceData*")
                 if self._ok(self.lib.CoreSdk_GetRawDeviceData(i, device)):
                     devices.append(device)
-            self._frames.put((t_ns, "raw_device_data", (int(info.publishTime.time), devices)))
+            publish_time = int(info.publishTime.time)
+            self._frames.put((t_ns, time.monotonic(), "raw_device_data", (publish_time, devices)))
         except Exception:
             logger.exception("Error reading MANUS raw device data")
 
@@ -301,7 +309,7 @@ class ManusBridge:
             try:
                 copy = self.ffi.new(self.ffi.typeof(pointer))
                 self.ffi.memmove(copy, pointer, self.ffi.sizeof(copy[0]))
-                self._frames.put((t_ns, stream, copy))
+                self._frames.put((t_ns, time.monotonic(), stream, copy))
             except Exception:
                 logger.exception("Error reading MANUS %s", stream)
 
@@ -310,9 +318,11 @@ class ManusBridge:
     # ----- the publish thread --------------------------------------------------------------
 
     def _load_calibration(self, glove_id: int, side: str) -> None:
-        """Once per glove, when found: its side's .mcal, as manus-client does. A missing or
-        rejected file: a warning, uncalibrated data."""
+        """When a glove is found or comes back, and every CALIBRATION_RETRY_S while it is
+        uncalibrated: its side's .mcal, as manus-client does. A missing or rejected file: a
+        warning, uncalibrated data."""
         self._calibrated_since[glove_id] = 0
+        self._calibration_tried[glove_id] = time.monotonic()
         path = self.calibration_dir / CALIBRATION_FILE.format(side=side)
         fix = "calibrate it with MANUS's SDK client (README, MANUS gloves)"
         try:
@@ -328,6 +338,7 @@ class ManusBridge:
         if self._ok(call) and result[0] == self.enums.SetGloveCalibrationReturnCode.Success:
             self._calibrated_since[glove_id] = time.time_ns()
             logger.info("Loaded the %s glove's calibration %s (%s)", side, path, code)
+            self._clear(f"uncalibrated_{side}", f"The {side} glove is calibrated now ({path})")
         else:
             call = _name(self.enums.SDKReturnCode, call)
             self._warn(
@@ -351,9 +362,9 @@ class ManusBridge:
                 self._load_calibration(glove_id, cached[1])
         return cached[1], nodes[cached[2]]
 
-    def _hands(self, t_ns: int, gloves: dict) -> tuple[dict, dict]:
+    def _hands(self, gloves: dict) -> tuple[dict, dict]:
         """A raw skeleton callback's hands in wire order, and each glove's RawSkeletonInfo."""
-        hands, infos = {}, {}
+        hands, infos, doubled = {}, {}, set()
         for glove_id, (ids, nodes, info) in gloves.items():
             try:
                 side, hand = self.wire_hand(glove_id, ids, nodes)
@@ -361,9 +372,23 @@ class ManusBridge:
                 self._warn(f"glove_{glove_id}_unusable", f"Skipping glove {glove_id}: {err}")
                 continue
             self._clear(f"glove_{glove_id}_unusable", f"Glove {glove_id} works now")
-            self._last_seen[glove_id] = (time.monotonic(), side)
+            now = time.monotonic()
+            self._last_seen[glove_id] = (now, side)
+            back = f"glove_{glove_id}_lost" in self.warnings  # the SDK may have dropped its .mcal
             self._clear(f"glove_{glove_id}_lost", f"The {side} glove ({glove_id}) is back")
+            retry = now - self._calibration_tried.get(glove_id, now) >= CALIBRATION_RETRY_S
+            if back or (retry and f"uncalibrated_{side}" in self.warnings):
+                self._load_calibration(glove_id, side)
+            if side in hands:  # two gloves say the same side: the first one stays
+                doubled.add(side)
+                continue
             hands[side], infos[side] = hand, sdk_plain(self.ffi, info)
+        for side in ("left", "right"):
+            if side in doubled:
+                text = f"Two gloves report the {side} hand: only the first goes out"
+                self._warn(f"same_side_{side}", text)
+            else:
+                self._clear(f"same_side_{side}", f"Only one glove reports the {side} hand now")
         return hands, infos
 
     def _sdk_data(self, stream: str, data: Any) -> Any:
@@ -380,6 +405,10 @@ class ManusBridge:
                 glove["data"] = dict(zip(names, glove["data"], strict=True))
         elif stream == "landscape" and data["gloveDevices"]["dongleCount"]:
             self._check_licence(data["settings"]["license"])  # read once there's a dongle
+            if data["gloveDevices"]["gloveCount"]:
+                self._clear("no_glove", "The dongle sees a glove now")
+            else:
+                self._warn("no_glove", "The dongle sees no glove: switch it on (and pair it)")
         elif stream == "system":
             logger.info("MANUS system message: %s", data)
         return data
@@ -428,18 +457,21 @@ class ManusBridge:
         )
 
     def publish_loop(self, socket: Any) -> None:
-        t_stats, counts = time.monotonic(), {}
+        t_stats, counts, late = time.monotonic(), {}, 0
         while not self._stop.is_set():
             self._check_gloves()
             if time.monotonic() - self._t_sent >= STATUS_EVERY_S:
                 self._send_status(socket)
             try:
-                t_ns, stream, data = self._frames.get(timeout=STATUS_EVERY_S / 4)
+                t_ns, queued, stream, data = self._frames.get(timeout=STATUS_EVERY_S / 4)
             except queue.Empty:
+                continue
+            if stream == "raw_skeleton" and time.monotonic() - queued > STALE_S:
+                late += 1  # the loop fell behind (a slow computer): newer hands wait
                 continue
             try:
                 if stream == "raw_skeleton":
-                    hands, data = self._hands(t_ns, data)
+                    hands, data = self._hands(data)
                     if not hands:
                         continue
                 else:
@@ -458,7 +490,13 @@ class ManusBridge:
                 elapsed = self._t_sent - t_stats
                 rates = (f"{k} {n / elapsed:.0f}" for k, n in sorted(counts.items()))
                 logger.info("Sent per second: %s", ", ".join(rates))
-                t_stats, counts = self._t_sent, {}
+                if late:
+                    text = f"The bridge falls behind: it skips hand frames older than {STALE_S:g} s"
+                    self._warn("falling_behind", text + " (a slow computer?)")
+                    logger.info("Skipped %d late hand frames in %.0f s", late, elapsed)
+                else:
+                    self._clear("falling_behind", "The bridge keeps up again")
+                t_stats, counts, late = self._t_sent, {}, 0
 
     def run(self) -> None:
         import zmq

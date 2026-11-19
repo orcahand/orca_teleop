@@ -24,7 +24,7 @@ import logging
 # extensions segfault.
 import torch._dynamo  # noqa: F401
 
-from orca_teleop.constants import DEFAULT_PORT
+from orca_teleop.constants import DEFAULT_MANUS_ADDRESS, DEFAULT_PORT
 from orca_teleop.pipeline import run_manus_local
 from orca_teleop.sim import OrcaHandSimSink
 
@@ -61,9 +61,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--glove-address",
-        default="tcp://127.0.0.1:2044",
-        help="The glove bridge's address, host:port or tcp://host:port "
-        "(default: tcp://127.0.0.1:2044)",
+        default=DEFAULT_MANUS_ADDRESS,
+        help=f"The glove bridge's address, [tcp://]HOST:PORT (default: {DEFAULT_MANUS_ADDRESS})",
     )
     parser.add_argument(
         "--visualize-landmarks",

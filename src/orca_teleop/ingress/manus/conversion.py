@@ -139,11 +139,13 @@ def wire_order(names: Sequence[str | None]) -> list[int]:
 def wire_to_keypoints(nodes: np.ndarray) -> np.ndarray:
     """``(25, 3)`` wire-order node positions -> the retargeter's ``(21, 3)`` landmarks.
 
+    More than 25 rows: the first 25 are used, as the publisher before the bridge did.
+
     Wrist-relative float32 metres in MediaPipe's landmark order, ready for
     ``HandFrame.keypoints``. No axis change: see the module docstring.
     """
     nodes = np.asarray(nodes, dtype=np.float32)
-    if nodes.shape != (NUM_NODES, 3):
+    if nodes.ndim != 2 or nodes.shape[0] < NUM_NODES or nodes.shape[1] != 3:
         raise ValueError(f"expected ({NUM_NODES}, 3) node positions, got {nodes.shape}")
-    keypoints = nodes[MANUS_TO_MANO]
+    keypoints = nodes[:NUM_NODES][MANUS_TO_MANO]
     return keypoints - keypoints[0:1]

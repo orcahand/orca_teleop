@@ -86,6 +86,7 @@ from orca_teleop.cameras import (
 from orca_teleop.constants import (
     DEFAULT_CONFIDENCE,
     DEFAULT_HAND,
+    DEFAULT_MANUS_ADDRESS,
     DEFAULT_PORT,
     JOIN_TIMEOUT,
     QUEUES_MAXSIZE,
@@ -401,9 +402,10 @@ def _main_record(argv: list[str]) -> None:
         help=f"Which hand the local publisher streams (default: {DEFAULT_HAND}).",
     )
     parser.add_argument(
-        "--zmq-address",
-        default="tcp://127.0.0.1:2044",
-        help="ZMQ address of the Manus C++ client for --source manus (default: tcp://127.0.0.1:2044).",
+        "--glove-address",
+        default=DEFAULT_MANUS_ADDRESS,
+        help=f"The MANUS glove bridge for --source manus, [tcp://]HOST:PORT "
+        f"(default: {DEFAULT_MANUS_ADDRESS}).",
     )
     parser.add_argument(
         "--quest-host",
@@ -553,7 +555,7 @@ def _main_record(argv: list[str]) -> None:
             if args.source == "manus":
                 publisher_process = ctx.Process(
                     target=_manus_publisher,
-                    args=(args.port, args.hand, args.zmq_address),
+                    args=(args.port, args.hand, args.glove_address),
                     name="manus-publisher",
                     daemon=True,
                 )

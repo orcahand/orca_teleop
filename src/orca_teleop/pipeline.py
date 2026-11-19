@@ -1028,6 +1028,7 @@ def _manus_publisher(
 
 
 def run_manus_local(
+    *,
     handedness: str = DEFAULT_HAND,
     zmq_address: str = DEFAULT_MANUS_ADDRESS,
     port: int = DEFAULT_PORT,

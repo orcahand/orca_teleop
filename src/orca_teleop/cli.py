@@ -46,7 +46,7 @@ def _common_parser(description: str) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--glove-address",
-        default=DEFAULT_MANUS_ADDRESS,
+        default=None,
         help=f"The MANUS glove bridge, [tcp://]HOST:PORT (default: {DEFAULT_MANUS_ADDRESS})",
     )
     parser.add_argument(
@@ -99,7 +99,8 @@ def _run_mediapipe(args, handedness: str, common: dict) -> None:
 def _run_manus(args, handedness: str, common: dict) -> None:
     if args.record:
         raise SystemExit("--record records the webcam only (--source mediapipe)")
-    run_manus_local(handedness=handedness, zmq_address=args.glove_address, **common)
+    address = args.glove_address or DEFAULT_MANUS_ADDRESS
+    run_manus_local(handedness=handedness, zmq_address=address, **common)
 
 
 # --source: each local publisher by name.
@@ -117,6 +118,13 @@ def _launch(args, sink, handedness: str) -> None:
     )
     if args.record and not args.local:
         raise SystemExit("--record records the local publisher; drop --no-local")
+    if args.glove_address and args.source != "manus":
+        raise SystemExit("--glove-address is for --source manus")
+    if not args.local and args.source != "mediapipe":
+        raise SystemExit(
+            f"--no-local waits for a remote publisher, so --source {args.source} would do "
+            "nothing: drop one of them"
+        )
     if args.local:
         SOURCES[args.source](args, handedness, common)
     else:

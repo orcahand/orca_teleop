@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import socket
 import threading
 import time
 
@@ -117,9 +118,9 @@ class ManusPublisher:
                         other_sides.update(sides)
                     else:
                         used += 1
-                        with self._lock:
+                        with self._lock:  # set inside: else a frame can go out twice
                             self._latest_keypoints = keypoints
-                        self._fresh.set()
+                            self._fresh.set()
                 now = time.monotonic()
                 if now - t_log >= WAIT_LOG_S:
                     if received == 0:
@@ -171,15 +172,22 @@ class ManusPublisher:
             self._handedness,
             self._zmq_address,
         )
+        # A plain TCP probe every 0.1 s, as the webcam publisher does: a refused gRPC connect
+        # backs off for seconds, which can pass the deadline after the server is up.
+        host, _, port = self._server_address.rpartition(":")
+        deadline = time.monotonic() + CONNECT_TIMEOUT_S
+        while True:
+            try:
+                with socket.create_connection((host, int(port)), timeout=0.5):
+                    break
+            except OSError as err:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"No ingress server answered at {self._server_address} within "
+                        f"{CONNECT_TIMEOUT_S:.0f}s. Start it before the publisher."
+                    ) from err
+                time.sleep(0.1)
         channel = grpc.insecure_channel(self._server_address)
-        try:
-            grpc.channel_ready_future(channel).result(timeout=CONNECT_TIMEOUT_S)
-        except grpc.FutureTimeoutError as err:
-            channel.close()
-            raise RuntimeError(
-                f"No ingress server answered at {self._server_address} within "
-                f"{CONNECT_TIMEOUT_S:.0f}s. Start it before the publisher."
-            ) from err
         zmq_thread = threading.Thread(target=self._zmq_receiver, name="zmq-receiver", daemon=True)
         zmq_thread.start()
         stub = hand_stream_pb2_grpc.HandStreamStub(channel)
