@@ -55,6 +55,7 @@ from mpl_toolkits.mplot3d.art3d import Line3D
 from orca_teleop.constants import HEARTBEAT_INTERVAL, QUEUES_MAXSIZE
 from orca_teleop.ingress import DEFAULT_PORT, HandLandmarks, IngressServer
 from orca_teleop.retargeting import utils as retargeter_utils
+from orca_teleop.retargeting.config import DEFAULT_CONFIGS, resolve
 from orca_teleop.retargeting.retargeter import FINGERS, Retargeter, RetargeterBackend, TargetPose
 
 logger = logging.getLogger(__name__)
@@ -591,14 +592,14 @@ def main() -> None:
     )
     parser.add_argument(
         "--retargeter",
-        default="adaptive_analytical",
-        choices=["rmsprop", "adaptive_analytical"],
-        help="Retargeter backend (default: adaptive_analytical, same as teleop)",
+        default=None,
+        choices=sorted(DEFAULT_CONFIGS),
+        help="Retargeter, with its webcam config (default: the config's type)",
     )
     parser.add_argument(
         "--retargeter-config",
         default=None,
-        help="YAML config for --retargeter adaptive_analytical",
+        help="Retargeter config instead of the default; its `type:` names the retargeter",
     )
     parser.add_argument(
         "--with-mediapipe",
@@ -626,6 +627,11 @@ def main() -> None:
         "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"]
     )
     args = parser.parse_args()
+    try:
+        args.retargeter, args.retargeter_config = resolve(args.retargeter, args.retargeter_config)
+    except (OSError, ValueError) as err:
+        parser.error(str(err))
+    args.retargeter_config = str(args.retargeter_config)
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),

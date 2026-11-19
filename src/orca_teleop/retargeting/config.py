@@ -6,8 +6,10 @@ its algorithm (``type: NAME``), so a file never runs under another one: given al
 file picks its algorithm; given with a ``--retargeter`` it disagrees with, it stops
 with an error.
 
-A file can start from another one (``base: OTHER.yaml``, a path relative to the file)
-and set only what differs: mappings merge key by key, any other value replaces.
+A file can start from another one (``base: OTHER.yaml``, a path relative to the file,
+else a packaged config's name) and set only what differs: mappings merge key by key, any
+other value replaces. Files from before 19 Nov 2026 name their retargeter in
+``optimizer: {type: NAME}``; that still counts.
 """
 
 from __future__ import annotations
@@ -37,7 +39,10 @@ def default_config_path(retargeter: str, source: str = "default") -> Path:
         raise ValueError(
             f"Unknown retargeter backend {retargeter!r}; expected one of {sorted(DEFAULT_CONFIGS)}"
         )
-    name = files.get(source, files["default"])
+    return _packaged(files.get(source, files["default"]))
+
+
+def _packaged(name: str) -> Path:
     return Path(str(resources.files("orca_teleop.retargeting") / "configs" / name))
 
 
@@ -59,7 +64,13 @@ def _load(path: Path, seen: tuple[Path, ...]) -> dict[str, Any]:
     base = cfg.pop("base", None)
     if base is None:
         return cfg
-    return _merge(_load(path.parent / base, (*seen, path.resolve())), cfg)
+    if not isinstance(base, str):
+        raise ValueError(f"{path}: `base:` must be a file name, got {base!r}")
+    # Next to the file, else a packaged config (so a copy elsewhere still finds its base).
+    base_path = path.parent / base
+    if not base_path.exists() and _packaged(base).exists():
+        base_path = _packaged(base)
+    return _merge(_load(base_path, (*seen, path.resolve())), cfg)
 
 
 def _merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
@@ -72,8 +83,11 @@ def _merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
 
 def config_type(path: str | Path) -> str:
     """The retargeter a config file is for: its ``type:``."""
-    kind = load_config(path).get("type")
-    if kind not in DEFAULT_CONFIGS:
+    cfg = load_config(path)
+    kind = cfg.get("type")
+    if kind is None and isinstance(cfg.get("optimizer"), dict):
+        kind = cfg["optimizer"].get("type")  # the schema before 19 Nov 2026
+    if not isinstance(kind, str) or kind not in DEFAULT_CONFIGS:
         raise ValueError(
             f"{path} must name its retargeter with `type:`, one of {sorted(DEFAULT_CONFIGS)}; "
             f"got {kind!r}"

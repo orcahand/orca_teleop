@@ -1117,6 +1117,11 @@ def run_manus_local(
     The bridge (``ingress/manus/bridge.py``, on the computer with the gloves) must be
     sending on ``zmq_address``; the publisher's log says so while nothing arrives.
     """
+    if run_kwargs.get("retargeter_config_path") is None:  # the gloves' own config
+        from orca_teleop.retargeting.config import DEFAULT_RETARGETER, default_config_path
+
+        backend = run_kwargs.get("retargeter_backend") or DEFAULT_RETARGETER
+        run_kwargs["retargeter_config_path"] = str(default_config_path(backend, "manus"))
     logger.info("MANUS publisher: glove bridge %s, %s hand", zmq_address, handedness)
     run_with_publisher(
         _manus_publisher,

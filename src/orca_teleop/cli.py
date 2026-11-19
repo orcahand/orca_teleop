@@ -219,7 +219,7 @@ def teleop_hand(argv: list[str] | None = None) -> None:
     if args.servo_acceleration is not None and not 0 <= args.servo_acceleration < float("inf"):
         parser.error("--servo-acceleration must be a number, 0 or more")
     _configure_logging(args.log_level)
-    _resolve_retargeter(parser, args, "mediapipe")
+    _resolve_retargeter(parser, args, args.source)
     logger.info("orca_core %s", importlib.metadata.version("orca_core"))
 
     sink = OrcaHandSink(
@@ -273,7 +273,7 @@ def teleop_urdf(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     _configure_logging(args.log_level)
-    _resolve_retargeter(parser, args, "mediapipe")
+    _resolve_retargeter(parser, args, args.source)
 
     handedness = args.hand or "right"
     sink = OrcaHandUrdfVizSink(

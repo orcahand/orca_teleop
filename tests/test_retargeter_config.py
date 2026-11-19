@@ -130,3 +130,46 @@ def test_a_broken_yaml_file_is_a_clear_error(tmp_path):
     cfg = _write(tmp_path / "r.yaml", "type: [unclosed\n")
     with pytest.raises(ValueError, match="is not valid YAML"):
         resolve(None, str(cfg))
+
+
+def test_a_file_in_the_old_schema_names_its_type_in_optimizer(tmp_path):
+    cfg = _write(tmp_path / "old.yaml", "optimizer:\n  type: adaptive_analytical\n")
+    assert resolve(None, str(cfg)) == ("adaptive_analytical", cfg)
+
+
+def test_a_bad_type_or_base_value_is_a_clear_error(tmp_path):
+    cfg = _write(tmp_path / "t.yaml", "type: [adaptive_analytical]\n")
+    with pytest.raises(ValueError, match="must name its retargeter"):
+        resolve(None, str(cfg))
+    cfg = _write(tmp_path / "b.yaml", "type: adaptive_analytical\nbase: 5\n")
+    with pytest.raises(ValueError, match="must be a file name"):
+        load_config(cfg)
+
+
+def test_a_copy_elsewhere_still_finds_a_packaged_base(tmp_path):
+    copy = _write(
+        tmp_path / "manus.yaml", default_config_path("adaptive_analytical", "manus").read_text()
+    )
+    assert load_config(copy) == load_config(default_config_path("adaptive_analytical", "manus"))
+
+
+def test_the_cli_picks_the_config_of_its_source():
+    from orca_teleop import cli
+
+    parser = cli._common_parser("test")
+    args = parser.parse_args(["--source", "manus"])
+    cli._resolve_retargeter(parser, args, args.source)
+    assert args.retargeter_config.name == "manus.yaml"
+
+
+def test_run_manus_local_uses_the_glove_config_by_default(monkeypatch):
+    from orca_teleop import pipeline
+
+    seen = {}
+    monkeypatch.setattr(pipeline, "run_with_publisher", lambda *a, **kw: seen.update(kw))
+    pipeline.run_manus_local(handedness="right")
+    assert seen["retargeter_config_path"] == str(
+        default_config_path("adaptive_analytical", "manus")
+    )
+    pipeline.run_manus_local(handedness="right", retargeter_config_path="x.yaml")
+    assert seen["retargeter_config_path"] == "x.yaml"

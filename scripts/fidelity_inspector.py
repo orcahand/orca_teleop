@@ -443,7 +443,7 @@ def main() -> None:
     res = replay(rec, retargeter)
     print(f"Replayed {len(rec.frame)} frames in {time.perf_counter() - t0:.1f} s")
     summary = summarize(rec, retargeter, res)
-    summary["retargeter_config"] = args.retargeter_config or "default (tuned)"
+    summary["retarget_config"] = args.retargeter_config or "default (tuned)"
     summary["urdf"] = retargeter.urdf_path
     print_summary(summary)
     if args.save_summary:
