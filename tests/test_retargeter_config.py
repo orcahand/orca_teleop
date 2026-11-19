@@ -79,10 +79,12 @@ def test_a_base_loop_stops(tmp_path):
         load_config(tmp_path / "a.yaml")
 
 
-def test_the_glove_starts_equal_to_the_webcam():
-    assert load_config(default_config_path("adaptive_analytical", "manus")) == load_config(
-        default_config_path("adaptive_analytical")
-    )
+def test_the_glove_differs_from_the_webcam_only_where_it_says():
+    glove = load_config(default_config_path("adaptive_analytical", "manus"))
+    webcam = load_config(default_config_path("adaptive_analytical"))
+    assert glove["retarget"].pop("palm_offset_cm") == 0.0
+    webcam["retarget"].pop("palm_offset_cm")
+    assert glove == webcam
 
 
 def test_from_paths_checks_the_file_type(tmp_path):
