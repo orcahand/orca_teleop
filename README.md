@@ -45,14 +45,18 @@ Check the webcam tracking in the 3D viewer first, with no hand attached:
 uv run --extra teleop orca-teleop-urdf --show-video
 ```
 
-Then drive the hand. `--model_path` is the path of the hand's `config.yaml`
-(orca_core stores the calibration next to it); orca_ui keeps it in
-`~/.orca_ui/hands/<hand>/config.yaml`. Only one program can hold the hand's
-serial port, so press Disconnect in orca_ui first.
+Then drive the hand. Only one program can hold the hand's serial port, so press
+Disconnect in orca_ui first.
 
 ```bash
-uv run --extra teleop orca-teleop-hand --model_path ~/.orca_ui/hands/orcahand-right/config.yaml --show-video
+uv run --extra teleop orca-teleop-hand --show-video
 ```
+
+`--model_path` names the hand's model: a `config.yaml` of orca_core's models (default:
+`orcahand-right`). For another model, give the path orca_ui prints as `config` when it
+starts. The calibration is not in that file: when the hand connects, orca_core reads it
+from `~/.orca/hands/<hand id>/`, the folder named after the hand's board, where orca_ui
+saves it.
 
 Useful flags: `--dry-run` runs everything except the hand; `--home` moves the
 hand to its neutral pose on connect; `--camera-index N` picks another camera
@@ -70,8 +74,10 @@ each motor's current and velocity with every read too (one more bus read, ~4 ms)
 when teleop quits. The log shows the value the motors took (they round and clamp it). On
 Dynamixel motors the ramp acts only with a speed cap, which this flag does not set.
 
-Teleop uses orca_core 0.13, as orca_ui 0.4 does. The log's first line names the
-orca_core in use.
+Teleop uses orca_core 0.14, as orca_ui 0.6 does. The log's first line names the
+orca_core in use. orca_core 0.14 does not read a calibration made with an older
+orca_core (orca_ui 0.5 or older): unless the hand's board holds one, calibrate the
+hand once again after the update.
 
 If the camera loses your hand, the robot hand holds its pose; when your hand is
 seen again it eases over to it in half a second, as it does at start from
@@ -182,7 +188,8 @@ uv run --extra teleop --extra manus orca-teleop-hand --source manus --dry-run --
 
 `--dry-run --viewer` shows the robot hand in the browser (http://localhost:8098)
 without moving the real hand: check that it follows your glove, then drop `--dry-run`
-to drive the hand. Add `--model_path` for your hand as in [Run](#run).
+to drive the hand. Add `--model_path` for a model other than `orcahand-right`, as in
+[Run](#run).
 
 `--source manus` picks the glove; without it, teleop uses the webcam, as before.
 Teleop reads the bridge at `127.0.0.1:2044` (this computer) by default;
@@ -308,8 +315,7 @@ needs the robot side running first, waiting for a publisher:
 
 ```bash
 uv run --no-sync python -m orca_teleop.ingress.replay_publisher recordings/thumb-01 --loop
-uv run --no-sync python scripts/fidelity_inspector.py recordings/thumb-01 \
-    --model-path ~/.orca_ui/hands/orcahand-right/config.yaml --no-viewer
+uv run --no-sync python scripts/fidelity_inspector.py recordings/thumb-01 --no-viewer
 ```
 
 `tests/test_fidelity.py` replays a recorded pinch clip and fails if pinch, curl,

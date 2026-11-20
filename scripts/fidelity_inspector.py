@@ -7,12 +7,10 @@ thumb comes first everywhere. Record a session with ``--record DIR`` on
 ``orca-teleop-hand``, ``orca-teleop-urdf`` or the MediaPipe publisher.
 
     # Score only (prints a summary; --save-summary writes it as JSON)
-    uv run --no-sync python scripts/fidelity_inspector.py recordings/thumb-01 \\
-        --model-path ~/.orca_ui/hands/orcahand-right/config.yaml --no-viewer
+    uv run --no-sync python scripts/fidelity_inspector.py recordings/thumb-01 --no-viewer
 
     # Score + 3D viewer with a timeline at http://localhost:8091
-    uv run --no-sync --with viser==1.1.1 python scripts/fidelity_inspector.py recordings/thumb-01 \\
-        --model-path ~/.orca_ui/hands/orcahand-right/config.yaml
+    uv run --no-sync --with viser==1.1.1 python scripts/fidelity_inspector.py recordings/thumb-01
 
 What is compared (all in the robot's frame, anchored at the robot's palm point,
 exactly as the solver's loss sees it):
@@ -424,7 +422,7 @@ def serve_viewer(rec, r, res, summary: dict, port: int) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("recording", help="folder written by --record")
-    ap.add_argument("--model-path", default=None, help="the hand's orca_core config.yaml")
+    ap.add_argument("--model-path", default=None, help="the hand model's orca_core config.yaml")
     ap.add_argument("--urdf-path", default=None, help="URDF to solve on (default: as the pipeline)")
     ap.add_argument(
         "--retarget-config", default=None, help="adaptive_analytical YAML (default: tuned)"

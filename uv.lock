@@ -2754,7 +2754,7 @@ wheels = [
 
 [[package]]
 name = "orca-core"
-version = "0.13.0"
+version = "0.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "dynamixel-sdk" },
@@ -2765,9 +2765,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/24/ba/4eb5245fccc08bd6295adad25b171c13acb1182ce37c9e6b3417439c24cf/orca_core-0.13.0.tar.gz", hash = "sha256:d21d13da7e58728444e0aa0ddf00bbcb44b1d777d5b8ae5289c8d8f809bfc111", size = 761445, upload-time = "2026-11-10T21:33:47.715Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1d/35/d5f9d780e04a8564cd2c00501d74af605aa905f71b65a0ff67ab2c3c7e2b/orca_core-0.14.0.tar.gz", hash = "sha256:d7c90dd6432cd1e6b252e8ad93f201380e19cf05633e651ca5187d9fe5a36c7f", size = 851849, upload-time = "2026-11-16T17:10:06.687Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a6/49/4a9cafa473ec8c12934a84bf8aae785da8d513587a17e7b50720ba1d7cd6/orca_core-0.13.0-py3-none-any.whl", hash = "sha256:d687621ee13f24dcac8ae7b6cce379cf0425dc68147a9374a86a24959e6a996a", size = 366141, upload-time = "2026-11-10T21:33:46.021Z" },
+    { url = "https://files.pythonhosted.org/packages/97/6a/f1b59d6eac89ae0aa2b7d31acc051c23113248fa692a7105b4fd19fd713a/orca_core-0.14.0-py3-none-any.whl", hash = "sha256:0f8f394eba1e6575b8130f3bd00e1314960b56c88252b6e60e33f9ba6b2a08be", size = 410554, upload-time = "2026-11-16T17:10:05.055Z" },
 ]
 
 [[package]]
@@ -2864,7 +2864,7 @@ requires-dist = [
     { name = "nlopt", marker = "extra == 'adaptive'" },
     { name = "numpy", specifier = ">=2.0.0,<3.0.0" },
     { name = "opencv-python", marker = "extra == 'mediapipe'" },
-    { name = "orca-core", specifier = ">=0.13.0,<0.14.0" },
+    { name = "orca-core", specifier = ">=0.14.0,<0.15" },
     { name = "orca-sim", marker = "extra == 'sim'", git = "https://github.com/orcahand/orca_sim.git?rev=main" },
     { name = "orca-teleop", extras = ["adaptive", "mediapipe", "urdf-viz", "viewer"], marker = "extra == 'teleop'" },
     { name = "orca-teleop", extras = ["mediapipe", "metaquest", "adaptive"], marker = "extra == 'learning'" },

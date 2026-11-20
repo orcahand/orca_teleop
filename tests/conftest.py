@@ -71,6 +71,13 @@ def patch_mock_hand(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _scratch_orca_home(monkeypatch, tmp_path_factory):
+    """Point ORCA_HOME at a temporary folder: orca_core keeps each hand's files
+    (calibration, joint ranges) there, so no test reads or writes the real ~/.orca."""
+    monkeypatch.setenv("ORCA_HOME", str(tmp_path_factory.mktemp("orca-home")))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_registered_joint_names():
     """Undo ``OrcaJointPositions.register_joint_names`` between tests.
 

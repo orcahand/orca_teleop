@@ -336,7 +336,7 @@ def test_a_dead_publisher_ends_the_session():
 
 
 class _ViewerHand(_QuitHand):
-    """``fail_reads``: "stale" as orca_core 0.13 fails (cached values, last_read_ok
+    """``fail_reads``: "stale" as orca_core 0.14 fails (cached values, last_read_ok
     False), "raise" as an older one might."""
 
     def __init__(self, model_path=None, fail_reads: str | None = None):

@@ -412,7 +412,7 @@ class OrcaHandSink(RecordableSink):
     def current_positions(self) -> OrcaJointPositions | None:
         """The hand's pose before teleop starts; the start ramp begins there.
 
-        Never from a failed read: orca_core 0.13 then returns the motors' cached
+        Never from a failed read: orca_core 0.14 then returns the motors' cached
         positions (zeros before the first good read), a far-off pose the first
         commands would jump from. So it tries 3 times, then refuses to start.
         """
