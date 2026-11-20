@@ -1121,3 +1121,16 @@ def test_record_saves_the_glove_hands_in_the_webcam_recording_format(tmp_path):
     np.testing.assert_allclose(got.world[0], conversion.wire_to_keypoints(hand), atol=1e-6)
     assert not got.image.any() and got.handedness[0] == "right"
     assert not (rec / "video.mp4").exists()
+
+
+def test_record_refuses_a_used_folder_before_the_hand_starts(tmp_path, capsys):
+    from orca_teleop import cli
+
+    used = tmp_path / "used"
+    used.mkdir()
+    (used / "meta.json").write_text("{}")
+    with pytest.raises(SystemExit):
+        cli._common_parser("test").parse_args(["--record", str(used)])
+    assert "is not an empty folder" in capsys.readouterr().err
+    args = cli._common_parser("test").parse_args(["--record", str(tmp_path / "new")])
+    assert args.record == str(tmp_path / "new")

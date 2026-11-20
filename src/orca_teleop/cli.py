@@ -11,12 +11,21 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import logging
+from pathlib import Path
 
 from orca_teleop.constants import DEFAULT_MANUS_ADDRESS
 from orca_teleop.ingress.server import DEFAULT_PORT
 from orca_teleop.pipeline import OrcaHandSink, run, run_local, run_manus_local
 
 logger = logging.getLogger("orca_teleop")
+
+
+def _new_record_dir(path: str) -> str:
+    """--record DIR: refused before the hand starts if it holds anything already."""
+    folder = Path(path)
+    if folder.exists() and (not folder.is_dir() or any(folder.iterdir())):
+        raise argparse.ArgumentTypeError(f"{path} exists and is not an empty folder")
+    return path
 
 
 def _common_parser(description: str) -> argparse.ArgumentParser:
@@ -59,6 +68,7 @@ def _common_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument(
         "--record",
         default=None,
+        type=_new_record_dir,
         metavar="DIR",
         help="Record the session's hand landmarks into DIR for offline replay (the webcam: "
         "also its frames)",

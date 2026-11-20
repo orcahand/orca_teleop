@@ -215,10 +215,10 @@ lets only programs on the glove computer read it. Choose one way:
   uv run --extra teleop --extra manus orca-teleop-hand --source manus --glove-address GLOVE_PC:2044 --model_path ...
   ```
 
-If you used gloves with this repo before: MANUS's C++ `manus-client` is replaced by
-the bridge (teleop still reads `manus-client` the same way, on port 2044), and the
-glove now runs with `orca-teleop-hand --source manus`. `--zmq-address` is now
-`--glove-address`.
+If you used gloves with this repo before: the Python bridge replaces our C++
+`manus-client`. Teleop can still read `manus-client` on port 2044, but only the bridge
+sends warnings. Run the glove with `orca-teleop-hand --source manus`; `--zmq-address` is
+now `--glove-address`.
 
 ### Warnings
 

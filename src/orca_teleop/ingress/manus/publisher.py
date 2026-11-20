@@ -36,6 +36,9 @@ CONNECT_TIMEOUT_S = 10.0  # for the ingress server, which starts with the publis
 STOP_TIMEOUT_S = 2.0  # for the stream to close cleanly once stopped
 
 
+NO_IMAGE = np.zeros((21, 3))  # a glove has no image landmarks to record
+
+
 class ManusPublisher:
     """Receives MANUS glove frames over ZMQ and streams one hand to IngressServer via gRPC."""
 
@@ -124,7 +127,7 @@ class ManusPublisher:
                         if self._recorder is not None:
                             frame = self._recorder.add_time(time.time_ns())
                             self._recorder.add_landmarks(
-                                frame, keypoints, None, self._handedness, 1.0
+                                frame, keypoints, NO_IMAGE, self._handedness, 1.0
                             )
                         with self._lock:  # set inside: else a frame can go out twice
                             self._latest_keypoints = keypoints
@@ -174,12 +177,6 @@ class ManusPublisher:
 
     def run(self) -> None:
         """Start the ZMQ receiver thread and the gRPC stream; block until stopped."""
-        if self._record_dir is not None:  # before anything starts, so a used folder stops it
-            from orca_teleop.ingress.landmark_recording import LandmarkRecorder
-
-            meta = {"input": "glove", "glove": "manus", "handedness": self._handedness}
-            self._recorder = LandmarkRecorder(self._record_dir, {**meta, "video": False}, 0.0)
-            logger.info("Recording to %s", self._record_dir)
         logger.info(
             "ManusPublisher starting (server=%s, hand=%s, bridge=%s)",
             self._server_address,
@@ -202,6 +199,17 @@ class ManusPublisher:
                         f"{CONNECT_TIMEOUT_S:.0f}s. Start it before the publisher."
                     ) from err
                 time.sleep(0.1)
+        if self._record_dir is not None:  # after the probe, so a failed start leaves no folder
+            from orca_teleop.ingress.landmark_recording import LandmarkRecorder
+
+            meta = {
+                "input": "glove",
+                "glove": "manus",
+                "handedness": self._handedness,
+                "video": False,
+            }
+            self._recorder = LandmarkRecorder(self._record_dir, meta, 0.0)
+            logger.info("Recording to %s", self._record_dir)
         channel = grpc.insecure_channel(self._server_address)
         zmq_thread = threading.Thread(target=self._zmq_receiver, name="zmq-receiver", daemon=True)
         zmq_thread.start()
