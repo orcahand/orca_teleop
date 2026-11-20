@@ -45,6 +45,7 @@ from typing import Any, Literal
 
 import numpy as np
 from orca_core import OrcaHand, OrcaJointPositions
+from orca_core.hardware.motor_client import ServoProfile
 
 # ``OpenCVCameraConfig`` is also re-exported here for callers that historically
 # imported it from ``orca_teleop.pipeline``.
@@ -271,8 +272,10 @@ class OrcaHandSink(RecordableSink):
     ``servo_acceleration_deg_s2`` sets the motors' own acceleration ramp for the session,
     after ``init_joints`` (0 = no ramp: each command is a step); ``close`` puts the values
     from before back. If a session ends without ``close`` (killed, power cut), a Feetech
-    hand gets orca_core's default again at the next connect; a Dynamixel hand keeps the
-    session's value until its motors lose power.
+    hand gets orca_core's default again at the next ``init_joints``; a Dynamixel hand
+    keeps the session's value until its motors lose power or change operating mode. On
+    Dynamixel motors the ramp acts only with a speed cap (Profile Velocity), which this
+    does not set.
     """
 
     def __init__(
@@ -332,25 +335,25 @@ class OrcaHandSink(RecordableSink):
         self._cameras.ensure_live()
 
     def _set_servo_acceleration(self, deg_s2: float) -> None:
-        from orca_core.hardware.motor_client import ServoProfile
-
         before = self._hand.get_servo_profile()
-        self._acceleration_before = {
-            mid: p.acceleration_rad_s2
-            for mid, p in before.items()
-            if p is not None and p.acceleration_rad_s2 is not None
-        }
+        unread = [mid for mid, p in before.items() if p is None or p.acceleration_rad_s2 is None]
+        if unread:  # it could not be put back on them
+            raise RuntimeError(
+                f"Could not read the servo acceleration of motors {unread}; "
+                "--servo-acceleration changes nothing"
+            )
+        self._acceleration_before = {mid: p.acceleration_rad_s2 for mid, p in before.items()}
         wanted = ServoProfile(acceleration_rad_s2=np.radians(deg_s2))
-        self._hand.set_servo_profile({mid: wanted for mid in self._hand.config.motor_ids})
+        self._hand.set_servo_profile({mid: wanted for mid in before})
+        now = self._hand.get_servo_profile()  # the motors round and clamp
         logger.info(
-            "Servo acceleration %s for this session (was %s deg/s^2)",
-            "off: no ramp" if deg_s2 == 0 else f"{deg_s2:g} deg/s^2",
-            sorted({round(float(np.degrees(a))) for a in self._acceleration_before.values()}),
+            "Servo acceleration for this session: %s deg/s^2 (asked %g, 0 = no ramp; was %s)",
+            _deg_set(now.values()),
+            deg_s2,
+            _deg_set(before.values()),
         )
 
     def _restore_servo_acceleration(self) -> None:
-        from orca_core.hardware.motor_client import ServoProfile
-
         before, self._acceleration_before = self._acceleration_before, {}
         if before:
             self._hand.set_servo_profile(
@@ -560,6 +563,13 @@ class OrcaHandSink(RecordableSink):
             if self._joint_log is not None:
                 self._joint_log.close()
                 self._joint_log = None
+
+
+def _deg_set(profiles: Any) -> list[float]:
+    """The distinct accelerations of ``ServoProfile``s, in deg/s^2."""
+    return sorted(
+        {round(float(np.degrees(p.acceleration_rad_s2)), 1) for p in profiles if p is not None}
+    )
 
 
 def _version(package: str) -> str | None:

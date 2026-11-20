@@ -814,7 +814,8 @@ class _ProfileHand(_QuitHand):
         from orca_core.hardware.motor_client import ServoProfile
 
         return {
-            m: ServoProfile(velocity_rad_s=0.0, acceleration_rad_s2=a) for m, a in self.acc.items()
+            m: None if a is None else ServoProfile(velocity_rad_s=0.0, acceleration_rad_s2=a)
+            for m, a in self.acc.items()
         }
 
     def set_servo_profile(self, profiles):
@@ -863,6 +864,20 @@ def test_a_failed_acceleration_restore_still_turns_the_torque_off(monkeypatch):
 def test_the_cli_refuses_a_negative_servo_acceleration(capsys):
     from orca_teleop import cli
 
-    with pytest.raises(SystemExit):
-        cli.teleop_hand(["--servo-acceleration", "-1", "--dry-run"])
-    assert "--servo-acceleration must be 0 or more" in capsys.readouterr().err
+    for bad in ("-1", "inf", "nan"):
+        with pytest.raises(SystemExit):
+            cli.teleop_hand(["--servo-acceleration", bad, "--dry-run"])
+        assert "--servo-acceleration must be 0 or more" in capsys.readouterr().err
+
+
+def test_an_unreadable_motor_stops_the_start_and_changes_nothing(monkeypatch):
+    hand = _ProfileHand()
+    hand.acc[2] = None
+    monkeypatch.setattr("orca_teleop.pipeline.OrcaHand", lambda mp=None: hand)
+    _no_cameras(monkeypatch)
+    sink = OrcaHandSink(model_path="ignored", move_to_neutral=False, servo_acceleration_deg_s2=0)
+    with pytest.raises(RuntimeError, match=r"motors \[2\]"):
+        sink.connect()
+    sink.close()
+    assert hand.acc == {1: 22.8, 2: None}
+    assert "profile" not in hand.calls

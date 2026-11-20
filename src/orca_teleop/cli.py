@@ -178,12 +178,13 @@ def teleop_hand(argv: list[str] | None = None) -> None:
         default=None,
         metavar="DEG_S2",
         help="The motors' acceleration ramp for this session, deg/s^2; 0 = no ramp (each "
-        "command is a step). Default: orca_core's. The old value comes back on exit",
+        "command is a step). Default: orca_core's. The old value comes back on exit. On "
+        "Dynamixel motors it acts only with a speed cap, which this does not set",
     )
     args = parser.parse_args(argv)
     if args.log_current and not args.log_joints:
         parser.error("--log-current needs --log-joints FILE to log into")
-    if args.servo_acceleration is not None and not args.servo_acceleration >= 0:
+    if args.servo_acceleration is not None and not 0 <= args.servo_acceleration < float("inf"):
         parser.error("--servo-acceleration must be 0 or more")
     _configure_logging(args.log_level)
     logger.info("orca_core %s", importlib.metadata.version("orca_core"))

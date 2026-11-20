@@ -68,7 +68,8 @@ for measuring how far the hand lags behind its commands; add `--log-current` to 
 each motor's current and velocity with every read too (one more bus read, ~4 ms).
 `--servo-acceleration DEG_S2` sets the motors' own acceleration ramp for the session
 (default: orca_core's; `0` = no ramp, each command is a step); the old value comes back
-when teleop quits.
+when teleop quits. The log shows the value the motors took (they round and clamp it). On
+Dynamixel motors the ramp acts only with a speed cap, which this flag does not set.
 
 Teleop uses orca_core 0.13, as orca_ui 0.4 does. The log's first line names the
 orca_core in use.
