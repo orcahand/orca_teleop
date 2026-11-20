@@ -347,7 +347,8 @@ config's `type` stops with an error.
 Record a webcam session with `--record DIR` (gloves: see [MANUS gloves](#manus-gloves-linux)). Replay it into the normal pipeline, as
 if it came from the camera, or score how well each finger is matched. The replay
 needs the robot side running first, waiting for a publisher:
-`orca-teleop-urdf --no-local`, or `orca-teleop-hand … --no-local`.
+`orca-teleop-urdf --no-local`, or `orca-teleop-hand … --no-local` (for a glove
+recording, add `--source manus`, so the glove's retargeter config is used).
 
 ```bash
 uv run --no-sync python -m orca_teleop.ingress.replay_publisher recordings/thumb-01 --loop

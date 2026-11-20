@@ -1074,8 +1074,20 @@ def test_source_manus_runs_the_manus_publisher_on_the_given_bridge(monkeypatch):
     assert got["sink"] is sink
     cli._launch(args.__class__(**{**vars(args), "record": "out"}), sink, "right")
     assert got["record_dir"] == "out"
-    with pytest.raises(SystemExit, match="would do nothing"):  # --no-local ignores the source
+    with pytest.raises(SystemExit, match="drop --no-local"):  # no local reader to address
         cli._launch(args.__class__(**{**vars(args), "local": False}), sink, "right")
+    remote = {}
+    import orca_teleop.cli as cli_module
+
+    real_run = cli_module.run
+    cli_module.run = lambda **kwargs: remote.update(kwargs)
+    try:
+        glove = cli._common_parser("test").parse_args(["--source", "manus", "--no-local"])
+        cli._resolve_retargeter(cli._common_parser("test"), glove, glove.source)
+        cli._launch(glove, sink, "right")
+    finally:
+        cli_module.run = real_run
+    assert remote["retargeter_config_path"].endswith("manus.yaml")  # glove frames from elsewhere
     webcam = cli._common_parser("test").parse_args(["--glove-address", "10.0.0.2:2044"])
     with pytest.raises(SystemExit, match="for --source manus"):
         cli._launch(webcam, sink, "right")

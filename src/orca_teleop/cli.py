@@ -57,7 +57,8 @@ def _common_parser(description: str) -> argparse.ArgumentParser:
         "--source",
         default="mediapipe",
         choices=sorted(SOURCES),
-        help="Local publisher: mediapipe (the webcam) or manus (MANUS gloves, via their bridge)",
+        help="The input: mediapipe (the webcam) or manus (MANUS gloves, via their bridge). "
+        "It picks the retargeter config; with --no-local it names what the other program sends",
     )
     parser.add_argument(
         "--glove-address",
@@ -152,11 +153,8 @@ def _launch(args, sink, handedness: str) -> None:
         raise SystemExit("--record records the local publisher; drop --no-local")
     if args.glove_address and args.source != "manus":
         raise SystemExit("--glove-address is for --source manus")
-    if not args.local and args.source != "mediapipe":
-        raise SystemExit(
-            f"--no-local waits for a remote publisher, so --source {args.source} would do "
-            "nothing: drop one of them"
-        )
+    if args.glove_address and not args.local:
+        raise SystemExit("--glove-address is for the local glove reader; drop --no-local")
     if args.local:
         SOURCES[args.source](args, handedness, common)
     else:
