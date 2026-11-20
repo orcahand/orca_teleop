@@ -1174,83 +1174,9 @@ def run_metaquest_local(
         publisher_process.join(timeout=3.0)
 
 
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description="Orca Hand teleoperation pipeline. "
-        "Launches a publisher and the full retargeting pipeline.",
+if __name__ == "__main__":  # the old developer entry point, retired for the CLI
+    raise SystemExit(
+        "python -m orca_teleop.pipeline is no longer supported. Use orca-teleop-hand (add "
+        "--home for the old start pose) or orca-teleop-urdf; for MANUS gloves add --source "
+        "manus. See the README."
     )
-    parser.add_argument("--model_path", default=None, help="OrcaHand model directory")
-    parser.add_argument("--urdf_path", default=None, help="Hand URDF file")
-    parser.add_argument(
-        "--port", type=int, default=DEFAULT_PORT, help=f"gRPC port (default: {DEFAULT_PORT})"
-    )
-    parser.add_argument(
-        "--hand", default="right", choices=["left", "right"], help="Hand to track (default: right)"
-    )
-    parser.add_argument(
-        "--source",
-        default="mediapipe",
-        choices=["mediapipe", "manus"],
-        help="Input source (default: mediapipe)",
-    )
-    parser.add_argument(
-        "--glove-address",
-        default=DEFAULT_MANUS_ADDRESS,
-        help=f"The MANUS glove bridge, [tcp://]HOST:PORT (default: {DEFAULT_MANUS_ADDRESS})",
-    )
-    parser.add_argument(
-        "--confidence", type=float, default=0.7, help="MediaPipe confidence (default: 0.7)"
-    )
-    parser.add_argument("--show-video", action="store_true", help="Show webcam feed with landmarks")
-    parser.add_argument(
-        "--visualize-landmarks",
-        action="store_true",
-        help="Open a live 3D matplotlib window showing hand keypoints",
-    )
-    parser.add_argument(
-        "--retargeter",
-        default="adaptive_analytical",
-        choices=["rmsprop", "adaptive_analytical"],
-        help="Retargeter backend (default: adaptive_analytical)",
-    )
-    parser.add_argument(
-        "--retarget-config",
-        default=None,
-        help="YAML config for --retargeter adaptive_analytical",
-    )
-    parser.add_argument(
-        "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"]
-    )
-    args = parser.parse_args()
-
-    logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format="%(asctime)s %(name)s | %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
-    if args.source == "manus":
-        run_manus_local(
-            model_path=args.model_path,
-            urdf_path=args.urdf_path,
-            port=args.port,
-            handedness=args.hand,
-            zmq_address=args.glove_address,
-            visualize_landmarks=args.visualize_landmarks,
-            retargeter_backend=args.retargeter,
-            retargeter_config_path=args.retarget_config,
-        )
-    else:
-        run_local(
-            args.model_path,
-            args.urdf_path,
-            port=args.port,
-            handedness=args.hand,
-            confidence=args.confidence,
-            show_video=args.show_video,
-            visualize_landmarks=args.visualize_landmarks,
-            retargeter_backend=args.retargeter,
-            retargeter_config_path=args.retarget_config,
-        )
