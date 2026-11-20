@@ -1135,3 +1135,26 @@ def test_record_refuses_a_used_folder_before_the_hand_starts(tmp_path, capsys):
     assert "is not an empty folder" in capsys.readouterr().err
     args = cli._common_parser("test").parse_args(["--record", str(tmp_path / "new")])
     assert args.record == str(tmp_path / "new")
+
+
+def test_a_disk_error_stops_only_the_recording_and_says_why():
+    class Full:
+        closed = False
+
+        def add_time(self, t_ns):
+            raise OSError(28, "No space left on device")
+
+        def close(self):
+            self.closed = True
+
+    class Seen(ManusPublisher):
+        errors: list = []
+
+        def _recording_stopped(self, err):
+            self.errors.append(err)
+
+    publisher = Seen(handedness="right")
+    publisher._recorder = recorder = Full()
+    publisher._record(np.zeros((21, 3)))
+    assert publisher._recorder is None and recorder.closed
+    assert [e.errno for e in Seen.errors] == [28]

@@ -169,6 +169,11 @@ class ManusPublisher:
                 recorder.close()
             except OSError:
                 pass
+            self._recording_stopped(err)
+
+    def _recording_stopped(self, err: OSError) -> None:
+        """Called once when a disk error ends the recording (teleop goes on); a subclass
+        may show ``err``."""
 
     def _frame_generator(self):
         """Yield a HandFrame for each new glove frame."""
