@@ -75,7 +75,7 @@ Teleop uses orca_core 0.13, as orca_ui 0.4 does. The log's first line names the
 orca_core in use.
 
 If the camera loses your hand, the robot hand holds its pose; when your hand is
-seen again it eases over to it in a quarter second, as it does at start from
+seen again it eases over to it in half a second, as it does at start from
 wherever the hand is. Quitting turns torque off where the hand is, without moving
 it first.
 
