@@ -44,6 +44,7 @@ class ManusPublisher:
         server_address: str = "localhost:50051",
         handedness: str = "right",
         zmq_address: str = DEFAULT_MANUS_ADDRESS,
+        record_dir: str | None = None,
     ) -> None:
         if handedness.lower() not in wire.SIDES:
             raise ValueError(f"handedness must be one of {wire.SIDES}, got {handedness!r}")
@@ -56,6 +57,8 @@ class ManusPublisher:
         self._fresh = threading.Event()
         self._stop = threading.Event()
         self._warnings: dict[str, str] = {}
+        self._record_dir = record_dir
+        self._recorder = None  # a LandmarkRecorder while recording
 
     def stop(self) -> None:
         self._stop.set()
@@ -118,6 +121,11 @@ class ManusPublisher:
                         other_sides.update(sides)
                     else:
                         used += 1
+                        if self._recorder is not None:
+                            frame = self._recorder.add_time(time.time_ns())
+                            self._recorder.add_landmarks(
+                                frame, keypoints, None, self._handedness, 1.0
+                            )
                         with self._lock:  # set inside: else a frame can go out twice
                             self._latest_keypoints = keypoints
                             self._fresh.set()
@@ -166,6 +174,12 @@ class ManusPublisher:
 
     def run(self) -> None:
         """Start the ZMQ receiver thread and the gRPC stream; block until stopped."""
+        if self._record_dir is not None:  # before anything starts, so a used folder stops it
+            from orca_teleop.ingress.landmark_recording import LandmarkRecorder
+
+            meta = {"input": "glove", "glove": "manus", "handedness": self._handedness}
+            self._recorder = LandmarkRecorder(self._record_dir, {**meta, "video": False}, 0.0)
+            logger.info("Recording to %s", self._record_dir)
         logger.info(
             "ManusPublisher starting (server=%s, hand=%s, bridge=%s)",
             self._server_address,
@@ -209,6 +223,9 @@ class ManusPublisher:
                 stream_future.cancel()
             channel.close()
             zmq_thread.join(timeout=2.0)
+            if self._recorder is not None:
+                _, hands = self._recorder.close()
+                logger.info("Recorded %d hands to %s", hands, self._record_dir)
             logger.info("ManusPublisher shut down.")
 
 

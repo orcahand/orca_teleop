@@ -183,21 +183,42 @@ uv run --extra teleop --extra manus --with viser==1.1.1 orca-teleop-hand --sourc
 
 `--dry-run --viewer` shows the robot hand in the browser (http://localhost:8098)
 without moving the real hand: check that it follows your glove, then drop `--dry-run`
-to drive the hand. Add
-`--model_path` for your hand as in [Run](#run). Teleop reads `127.0.0.1:2044` by
-default; `--glove-address HOST:PORT` (or `tcp://HOST:PORT`) sets another address.
+to drive the hand. Add `--model_path` for your hand as in [Run](#run).
+
+`--source manus` picks the glove; without it, teleop uses the webcam, as before.
+Teleop reads the bridge at `127.0.0.1:2044` (this computer) by default;
+`--glove-address HOST:PORT` reads it elsewhere (see below). `--record DIR` saves the
+glove's hand landmarks, in the same format as a webcam recording but without video.
 
 ### One computer or two
 
+The bridge sends on the address in `--bind`. The default, `tcp://127.0.0.1:2044`,
+lets only programs on the glove computer read it. Choose one way:
+
 - **One Linux computer:** run the bridge and teleop on it, as shown.
-- **Two computers, SSH tunnel (recommended):** start the bridge as shown (it listens
-  on its own computer only). On the teleop computer, run
-  `ssh -N -L 2044:127.0.0.1:2044 USER@GLOVE_PC` and keep it open, then start teleop
-  as shown.
-- **Two computers, network:** start the bridge with `--bind tcp://0.0.0.0:2044`,
-  open TCP port 2044 in the glove computer's firewall, and add
-  `--glove-address GLOVE_PC:2044` to teleop. The stream has no password or
-  encryption, so do this only on a network you trust.
+- **Two computers, SSH tunnel (recommended):** start the bridge as shown. On the
+  teleop computer, keep a tunnel open in a second terminal; it makes the bridge appear
+  at `127.0.0.1:2044` there, so teleop needs no `--glove-address`:
+
+  ```bash
+  ssh -N -L 2044:127.0.0.1:2044 USER@GLOVE_PC      # teleop computer, keep it open
+  uv run --extra teleop --extra manus orca-teleop-hand --source manus --model_path ...
+  ```
+
+- **Two computers, over the network (no SSH):** the bridge must listen on the network,
+  and teleop must name the glove computer. Open TCP port 2044 in the glove computer's
+  firewall. The stream has no password or encryption, so do this only on a network
+  you trust.
+
+  ```bash
+  python ~/manus-bridge/bridge.py --calibration-dir ~/gloves --bind tcp://0.0.0.0:2044   # glove computer
+  uv run --extra teleop --extra manus orca-teleop-hand --source manus --glove-address GLOVE_PC:2044 --model_path ...
+  ```
+
+If you used gloves with this repo before: MANUS's C++ `manus-client` is replaced by
+the bridge (teleop still reads `manus-client` the same way, on port 2044), and the
+glove now runs with `orca-teleop-hand --source manus`. `--zmq-address` is now
+`--glove-address`.
 
 ### Warnings
 
@@ -279,7 +300,7 @@ comparison.
 
 ## Measure fidelity
 
-Record a webcam session with `--record DIR`. Replay it into the normal pipeline, as
+Record a webcam session with `--record DIR` (gloves: see [MANUS gloves](#manus-gloves-linux)). Replay it into the normal pipeline, as
 if it came from the camera, or score how well each finger is matched. The replay
 needs the robot side running first, waiting for a publisher:
 `orca-teleop-urdf --no-local`, or `orca-teleop-hand … --no-local`.

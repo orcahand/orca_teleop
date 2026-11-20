@@ -1067,8 +1067,8 @@ def test_source_manus_runs_the_manus_publisher_on_the_given_bridge(monkeypatch):
     cli._launch(args, sink, "right")
     assert got["zmq_address"] == "10.0.0.2:2044" and got["handedness"] == "right"
     assert got["sink"] is sink
-    with pytest.raises(SystemExit, match="webcam only"):
-        cli._launch(args.__class__(**{**vars(args), "record": "out"}), sink, "right")
+    cli._launch(args.__class__(**{**vars(args), "record": "out"}), sink, "right")
+    assert got["record_dir"] == "out"
     with pytest.raises(SystemExit, match="would do nothing"):  # --no-local ignores the source
         cli._launch(args.__class__(**{**vars(args), "local": False}), sink, "right")
     webcam = cli._common_parser("test").parse_args(["--glove-address", "10.0.0.2:2044"])
@@ -1086,3 +1086,38 @@ def test_more_than_25_nodes_use_the_first_25():
     )
     with pytest.raises(ValueError):
         conversion.wire_to_keypoints(nodes[:24])
+
+
+def test_record_saves_the_glove_hands_in_the_webcam_recording_format(tmp_path):
+    """--source manus --record DIR: every hand the publisher takes, as a recording that
+    main's replay and fidelity tools load (no video, no image landmarks)."""
+    from orca_teleop.ingress.landmark_recording import load_recording
+
+    landmarks_q: queue.Queue = queue.Queue(maxsize=4)
+    stop = threading.Event()
+    server = IngressServer(landmarks_q, stop, port=0)
+    port = server.start()
+    ctx, sock, address = _free_tcp()
+    rec = tmp_path / "rec"
+    publisher = ManusPublisher(f"localhost:{port}", "right", address, str(rec))
+    thread = threading.Thread(target=publisher.run, name="manus-publisher")
+    thread.start()
+    hand = fake_bridge.landmarks_to_wire(fake_bridge.made_up_hand(1.0))
+    try:
+        deadline = time.monotonic() + 10.0
+        while landmarks_q.empty() and time.monotonic() < deadline:
+            sock.send(wire.encode({"right": hand}, time.time_ns()))
+            time.sleep(0.02)
+    finally:
+        publisher.stop()
+        thread.join(timeout=5.0)
+        stop.set()
+        server.stop(grace=0.5)
+        sock.close()
+        ctx.term()
+    got = load_recording(rec)
+    assert got.meta["input"] == "glove" and got.meta["video"] is False
+    assert len(got.world) >= 1 and len(got.capture_time_ns) == len(got.world)
+    np.testing.assert_allclose(got.world[0], conversion.wire_to_keypoints(hand), atol=1e-6)
+    assert not got.image.any() and got.handedness[0] == "right"
+    assert not (rec / "video.mp4").exists()

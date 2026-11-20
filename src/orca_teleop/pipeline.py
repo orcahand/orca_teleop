@@ -1066,7 +1066,11 @@ def run_with_publisher(target: Any, args: tuple, name: str, **run_kwargs: Any) -
 
 
 def _manus_publisher(
-    port: int, handedness: str, zmq_address: str, log_level: int = logging.INFO
+    port: int,
+    handedness: str,
+    zmq_address: str,
+    log_level: int = logging.INFO,
+    record_dir: str | None = None,
 ) -> None:
     """Entry point for the MANUS publisher subprocess. A spawned process starts without
     logging, so it sets it up as teleop's own: the bridge's warnings, and their clearing,
@@ -1076,7 +1080,7 @@ def _manus_publisher(
     logging.basicConfig(
         level=log_level, format="%(asctime)s %(name)s | %(message)s", datefmt="%H:%M:%S"
     )
-    ManusPublisher(f"localhost:{port}", handedness, zmq_address).run()
+    ManusPublisher(f"localhost:{port}", handedness, zmq_address, record_dir).run()
 
 
 def run_manus_local(
@@ -1084,9 +1088,11 @@ def run_manus_local(
     handedness: str = DEFAULT_HAND,
     zmq_address: str = DEFAULT_MANUS_ADDRESS,
     port: int = DEFAULT_PORT,
+    record_dir: str | None = None,
     **run_kwargs: Any,
 ) -> None:
-    """Run ``run()`` plus a local MANUS publisher, which listens to a glove bridge.
+    """Run ``run()`` plus a local MANUS publisher, which listens to a glove bridge
+    (and records the glove's hands into ``record_dir``, if given).
 
     The bridge (``ingress/manus/bridge.py``, on the computer with the gloves) must be
     sending on ``zmq_address``; the publisher's log says so while nothing arrives.
@@ -1094,7 +1100,7 @@ def run_manus_local(
     logger.info("MANUS publisher: glove bridge %s, %s hand", zmq_address, handedness)
     run_with_publisher(
         _manus_publisher,
-        (port, handedness, zmq_address, logging.getLogger().getEffectiveLevel()),
+        (port, handedness, zmq_address, logging.getLogger().getEffectiveLevel(), record_dir),
         "manus-publisher",
         port=port,
         **run_kwargs,

@@ -60,7 +60,8 @@ def _common_parser(description: str) -> argparse.ArgumentParser:
         "--record",
         default=None,
         metavar="DIR",
-        help="Record the webcam session (raw frames + landmarks) into DIR for offline replay",
+        help="Record the session's hand landmarks into DIR for offline replay (the webcam: "
+        "also its frames)",
     )
     parser.add_argument(
         "--retargeter",
@@ -97,10 +98,8 @@ def _run_mediapipe(args, handedness: str, common: dict) -> None:
 
 
 def _run_manus(args, handedness: str, common: dict) -> None:
-    if args.record:
-        raise SystemExit("--record records the webcam only (--source mediapipe)")
     address = args.glove_address or DEFAULT_MANUS_ADDRESS
-    run_manus_local(handedness=handedness, zmq_address=address, **common)
+    run_manus_local(handedness=handedness, zmq_address=address, record_dir=args.record, **common)
 
 
 # --source: each local publisher by name.
