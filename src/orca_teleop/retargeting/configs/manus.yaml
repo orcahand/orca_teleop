@@ -8,7 +8,8 @@ retarget:
   # and it is one unmeasured offset less.
   palm_offset_cm: 0.0
   # The glove's skeleton keeps its bone lengths in every pose (within 0.8 % over 14,606 frames
-  # of glove clips), and the retargeter sees only that skeleton: so its bone lengths give the
-  # exact scale at the first frame, with no open-hand pose and no wait. Palm to fingertip, as
-  # the webcam measures, changed up to 4.3x with the pose on the same clips.
+  # of glove clips), so its palm-to-tip paths give the same scale at any first frame, with no
+  # open-hand pose and no wait (0.753-0.756 on the clips; palm to fingertip, as the webcam
+  # measures, gave 0.733-2.737). All clips so far had the same bone lengths to 0.1 mm: the scale
+  # may be MANUS's skeleton's, the same for every wearer (check with a second wearer).
   hand_size: bone_lengths

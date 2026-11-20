@@ -22,14 +22,18 @@ M_TO_CM = 100.0
 # The robot palm point sits this far palmar (base frame -z) of the midpoint of the thumb and
 # pinky bases; retarget.palm_offset_cm overrides it. From 28a034a (Sep 2025), never measured.
 DEFAULT_PALM_OFFSET_CM = 1.5
-# The hand-size scale counts the robot hand this much smaller than its model, so human motions
-# map a little larger. From d34b1d2 (Apr 2026), with no reason given; kept until a hand check.
+# The hand-size scale fits the human hand onto a robot hand this much smaller than its model, so
+# every target lands 10 % nearer the palm. From d34b1d2 (Apr 2026), with no reason given; kept
+# until a hand check.
 ROBOT_SIZE_FACTOR = 0.9
 # retarget.hand_size: how the human hand's size is measured, once per session.
 #   key_vectors: palm to fingertip over the first CALIBRATION_FRAMES frames (the hand must be
 #     open and flat then); the robot side is its neutral pose.
-#   bone_lengths: per finger, palm point + the 4 finger points' bone lengths, at the first frame.
-#     Exact for an input with a fixed skeleton (a glove), whatever the pose.
+#   bone_lengths: per finger, the path from the palm point through the finger's 4 points to its
+#     tip, at the first frame, on both hands (the robot's points are not the same joints: only
+#     the path's two ends match). The same in every pose for an input with a fixed skeleton (a
+#     glove). It measures the input's skeleton: if the glove does not fit it to the wearer, every
+#     wearer gets the same scale.
 HAND_SIZE_METHODS = ("key_vectors", "bone_lengths")
 logger = logging.getLogger(__name__)
 

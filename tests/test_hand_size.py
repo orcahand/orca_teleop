@@ -61,3 +61,27 @@ def test_an_unknown_hand_size_is_an_error(tmp_path):
     _model_or_skip()
     with pytest.raises(ValueError, match="hand_size"):
         _solver(tmp_path, hand_size="tape_measure")
+
+
+def test_a_hand_shaped_like_the_robot_gets_the_robot_size_factor(tmp_path, monkeypatch):
+    """Human points placed on the robot's own frames: every finger's ratio is the factor, so
+    each robot point pairs with its human point, finger by finger."""
+    from test_fidelity import _model_or_skip
+
+    from orca_teleop.retargeting.adaptive_analytical import ROBOT_SIZE_FACTOR
+
+    _model_or_skip()
+    r = _solver(tmp_path, hand_size="bone_lengths", palm_offset_cm=0.0)
+    pos, _ = r._robot.compute_positions_and_jacobians(
+        r._full_model_qpos(r._neutral_qpos_phys), r._computed_frame_indices, r._frame_offsets
+    )
+    frame = np.zeros((21, 3))
+    frame[0] = pos[r._palm_index]
+    for finger in range(5):
+        points = (r._base_indices, r._pip_indices, r._dip_indices, r._tip_indices)
+        for k, index in enumerate(points):
+            frame[1 + 4 * finger + k] = pos[index[finger]]
+    ratios = []
+    monkeypatch.setattr(r, "_finish_calibration", lambda rs, method: ratios.append(rs))
+    r._scale_from_bone_lengths(frame, "mediapipe")
+    np.testing.assert_allclose(ratios[0], ROBOT_SIZE_FACTOR, rtol=1e-9)
