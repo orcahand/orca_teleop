@@ -1032,7 +1032,10 @@ def test_ctrl_c_ends_the_stream_cleanly(caplog):
     ctx, sock, address = _free_tcp()
     proc = subprocess.Popen(
         [sys.executable, "-m", "orca_teleop.ingress.manus.publisher"]
-        + ["--server", f"localhost:{port}", "--glove-address", address]
+        + ["--server", f"localhost:{port}", "--glove-address", address],
+        # A test run started in the background (``&``) passes "ignore SIGINT" on, and Python
+        # then installs no Ctrl+C handler: give the child the terminal's default back.
+        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL),
     )
     try:
         deadline = time.monotonic() + 20.0
