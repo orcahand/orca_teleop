@@ -66,6 +66,9 @@ hand isn't following. It needs viser:
 `--log-joints FILE` writes every command and motor read with its time (JSON lines),
 for measuring how far the hand lags behind its commands; add `--log-current` to log
 each motor's current and velocity with every read too (one more bus read, ~4 ms).
+`--servo-acceleration DEG_S2` sets the motors' own acceleration ramp for the session
+(default: orca_core's; `0` = no ramp, each command is a step); the old value comes back
+when teleop quits.
 
 Teleop uses orca_core 0.13, as orca_ui 0.4 does. The log's first line names the
 orca_core in use.

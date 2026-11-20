@@ -267,6 +267,12 @@ class OrcaHandSink(RecordableSink):
     (velocity in rad/s) per motor id, from a second bus read right after (about 4 ms;
     orca_core has no public call giving joints and currents in one). The log never
     overwrites a file: an existing one fails at ``connect``, before the hand.
+
+    ``servo_acceleration_deg_s2`` sets the motors' own acceleration ramp for the session,
+    after ``init_joints`` (0 = no ramp: each command is a step); ``close`` puts the values
+    from before back. If a session ends without ``close`` (killed, power cut), a Feetech
+    hand gets orca_core's default again at the next connect; a Dynamixel hand keeps the
+    session's value until its motors lose power.
     """
 
     def __init__(
@@ -279,6 +285,7 @@ class OrcaHandSink(RecordableSink):
         readback_hz: float = 10.0,
         joint_log: str | None = None,
         log_current: bool = False,
+        servo_acceleration_deg_s2: float | None = None,
     ) -> None:
         self._model_path = model_path
         self._hand = OrcaHand(model_path)
@@ -293,6 +300,8 @@ class OrcaHandSink(RecordableSink):
         self._log_current = log_current
         self._joint_log: Any | None = None
         self._connected = False  # the bus is open: init may have switched the torque on
+        self._servo_acceleration = servo_acceleration_deg_s2
+        self._acceleration_before: dict[int, float] = {}  # motor id -> rad/s^2, for close()
         self._cameras = CameraManager(camera_configs or [])
 
     def connect(self) -> None:
@@ -311,6 +320,8 @@ class OrcaHandSink(RecordableSink):
                 raise RuntimeError(f"Robot failed to connect: {message}")
             self._connected = True
             self._hand.init_joints(move_to_neutral=self._move_to_neutral)
+            if self._servo_acceleration is not None:
+                self._set_servo_acceleration(self._servo_acceleration)
         else:
             logger.warning(
                 "OrcaHandSink: hardware connection skipped (connect_hardware=False) — "
@@ -319,6 +330,33 @@ class OrcaHandSink(RecordableSink):
             )
         self._cameras.open()
         self._cameras.ensure_live()
+
+    def _set_servo_acceleration(self, deg_s2: float) -> None:
+        from orca_core.hardware.motor_client import ServoProfile
+
+        before = self._hand.get_servo_profile()
+        self._acceleration_before = {
+            mid: p.acceleration_rad_s2
+            for mid, p in before.items()
+            if p is not None and p.acceleration_rad_s2 is not None
+        }
+        wanted = ServoProfile(acceleration_rad_s2=np.radians(deg_s2))
+        self._hand.set_servo_profile({mid: wanted for mid in self._hand.config.motor_ids})
+        logger.info(
+            "Servo acceleration %s for this session (was %s deg/s^2)",
+            "off: no ramp" if deg_s2 == 0 else f"{deg_s2:g} deg/s^2",
+            sorted({round(float(np.degrees(a))) for a in self._acceleration_before.values()}),
+        )
+
+    def _restore_servo_acceleration(self) -> None:
+        from orca_core.hardware.motor_client import ServoProfile
+
+        before, self._acceleration_before = self._acceleration_before, {}
+        if before:
+            self._hand.set_servo_profile(
+                {mid: ServoProfile(acceleration_rad_s2=a) for mid, a in before.items()}
+            )
+            logger.info("Servo acceleration put back")
 
     @property
     def joint_ids(self) -> list[str]:
@@ -494,6 +532,10 @@ class OrcaHandSink(RecordableSink):
             return
         try:
             if self._connected:
+                try:
+                    self._restore_servo_acceleration()
+                except Exception:  # the torque must still go off
+                    logger.exception("Putting the servo acceleration back failed")
                 try:
                     unconfirmed = self._hand.disable_torque() or []
                 finally:  # also after a failed torque-off: disconnect retries it, closes the port

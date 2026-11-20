@@ -172,9 +172,19 @@ def teleop_hand(argv: list[str] | None = None) -> None:
         action="store_true",
         help="With --log-joints, also log motor currents and velocities (a second read, ~4 ms)",
     )
+    parser.add_argument(
+        "--servo-acceleration",
+        type=float,
+        default=None,
+        metavar="DEG_S2",
+        help="The motors' acceleration ramp for this session, deg/s^2; 0 = no ramp (each "
+        "command is a step). Default: orca_core's. The old value comes back on exit",
+    )
     args = parser.parse_args(argv)
     if args.log_current and not args.log_joints:
         parser.error("--log-current needs --log-joints FILE to log into")
+    if args.servo_acceleration is not None and not args.servo_acceleration >= 0:
+        parser.error("--servo-acceleration must be 0 or more")
     _configure_logging(args.log_level)
     logger.info("orca_core %s", importlib.metadata.version("orca_core"))
 
@@ -185,6 +195,7 @@ def teleop_hand(argv: list[str] | None = None) -> None:
         readback_hz=args.readback_hz,
         joint_log=args.log_joints,
         log_current=args.log_current,
+        servo_acceleration_deg_s2=args.servo_acceleration,
     )
     handedness = args.hand or sink.handedness
     if handedness != sink.handedness:

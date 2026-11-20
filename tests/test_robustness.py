@@ -798,3 +798,71 @@ def test_the_publisher_sends_the_newest_result_once_and_wakes_at_once(monkeypatc
     waiter.join(1.0)
     assert got and got[0][0] == 4.0
     assert got[0][1] - sent < 0.05  # woken by the result, not by a poll or timeout
+
+
+class _ProfileHand(_QuitHand):
+    """A hand whose motors report an acceleration (rad/s^2) and accept new ones."""
+
+    config = SimpleNamespace(joint_ids=["index_mcp", "wrist"], motor_ids=[1, 2])
+
+    def __init__(self, model_path=None, fail_set_on_close=False):
+        super().__init__(model_path)
+        self.acc = {1: 22.8, 2: 22.8}
+        self.fail_set_on_close = fail_set_on_close
+
+    def get_servo_profile(self):
+        from orca_core.hardware.motor_client import ServoProfile
+
+        return {
+            m: ServoProfile(velocity_rad_s=0.0, acceleration_rad_s2=a) for m, a in self.acc.items()
+        }
+
+    def set_servo_profile(self, profiles):
+        if self.fail_set_on_close and "profile" in self.calls:  # the restore fails
+            self.calls.append("restore failed")
+            raise OSError("port gone")
+        self.calls.append("profile")
+        self.acc.update({m: p.acceleration_rad_s2 for m, p in profiles.items()})
+
+
+@pytest.mark.parametrize("deg_s2", [0.0, 500.0])
+def test_servo_acceleration_is_set_after_init_and_put_back_on_close(monkeypatch, deg_s2):
+    hand = _ProfileHand()
+    monkeypatch.setattr("orca_teleop.pipeline.OrcaHand", lambda mp=None: hand)
+    _no_cameras(monkeypatch)
+    sink = OrcaHandSink(
+        model_path="ignored", move_to_neutral=False, servo_acceleration_deg_s2=deg_s2
+    )
+    sink.connect()
+    assert hand.acc == {1: pytest.approx(np.radians(deg_s2)), 2: pytest.approx(np.radians(deg_s2))}
+    sink.close()
+    assert hand.acc == {1: 22.8, 2: 22.8}
+    assert hand.calls == ["init", "profile", "profile", "torque off", "disconnect"]
+
+
+def test_without_servo_acceleration_the_profile_is_never_touched(monkeypatch):
+    hand = _ProfileHand()
+    monkeypatch.setattr("orca_teleop.pipeline.OrcaHand", lambda mp=None: hand)
+    _no_cameras(monkeypatch)
+    sink = OrcaHandSink(model_path="ignored", move_to_neutral=False)
+    sink.connect()
+    sink.close()
+    assert "profile" not in hand.calls
+
+
+def test_a_failed_acceleration_restore_still_turns_the_torque_off(monkeypatch):
+    hand = _ProfileHand(fail_set_on_close=True)
+    monkeypatch.setattr("orca_teleop.pipeline.OrcaHand", lambda mp=None: hand)
+    _no_cameras(monkeypatch)
+    sink = OrcaHandSink(model_path="ignored", move_to_neutral=False, servo_acceleration_deg_s2=0)
+    sink.connect()
+    sink.close()  # logs the error, doesn't raise
+    assert hand.calls == ["init", "profile", "restore failed", "torque off", "disconnect"]
+
+
+def test_the_cli_refuses_a_negative_servo_acceleration(capsys):
+    from orca_teleop import cli
+
+    with pytest.raises(SystemExit):
+        cli.teleop_hand(["--servo-acceleration", "-1", "--dry-run"])
+    assert "--servo-acceleration must be 0 or more" in capsys.readouterr().err
