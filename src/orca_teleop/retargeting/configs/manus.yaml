@@ -7,3 +7,8 @@ retarget:
   # hand (19 Nov 2026, fresh glove calibration) 0 cm was at least as good as the webcam's 1.5 cm,
   # and it is one unmeasured offset less.
   palm_offset_cm: 0.0
+  # The glove's skeleton keeps its bone lengths in every pose (within 0.8 % over 14,606 frames
+  # of glove clips), and the retargeter sees only that skeleton: so its bone lengths give the
+  # exact scale at the first frame, with no open-hand pose and no wait. Palm to fingertip, as
+  # the webcam measures, changed up to 4.3x with the pose on the same clips.
+  hand_size: bone_lengths

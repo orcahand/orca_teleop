@@ -22,6 +22,15 @@ M_TO_CM = 100.0
 # The robot palm point sits this far palmar (base frame -z) of the midpoint of the thumb and
 # pinky bases; retarget.palm_offset_cm overrides it. From 28a034a (Sep 2025), never measured.
 DEFAULT_PALM_OFFSET_CM = 1.5
+# The hand-size scale counts the robot hand this much smaller than its model, so human motions
+# map a little larger. From d34b1d2 (Apr 2026), with no reason given; kept until a hand check.
+ROBOT_SIZE_FACTOR = 0.9
+# retarget.hand_size: how the human hand's size is measured, once per session.
+#   key_vectors: palm to fingertip over the first CALIBRATION_FRAMES frames (the hand must be
+#     open and flat then); the robot side is its neutral pose.
+#   bone_lengths: per finger, palm point + the 4 finger points' bone lengths, at the first frame.
+#     Exact for an input with a fixed skeleton (a glove), whatever the pose.
+HAND_SIZE_METHODS = ("key_vectors", "bone_lengths")
 logger = logging.getLogger(__name__)
 
 _MP_TIP_INDICES = np.array([4, 8, 12, 16, 20], dtype=np.int64)
@@ -306,6 +315,13 @@ class _LPFilter:
         self._state = None
 
 
+def _chain_lengths(palm: np.ndarray, chains: np.ndarray) -> np.ndarray:
+    """Per finger: palm point to the finger's first point, plus its bones. ``chains`` is
+    (point, finger, xyz), from the finger's base to its tip."""
+    first = np.linalg.norm(chains[0] - palm, axis=-1)
+    return first + np.linalg.norm(np.diff(chains, axis=0), axis=-1).sum(axis=0)
+
+
 class AdaptiveAnalyticalRetargeter:
     """Wuji-style adaptive retargeter adapted to OrcaHand's kinematics and API."""
 
@@ -389,8 +405,11 @@ class AdaptiveAnalyticalRetargeter:
             normalized = normalized @ self._rotation_matrix.T
 
         if not self._calibration_done:
-            self._ingest_calibration_frame(normalized, target_pose.source)
-            return None
+            if self._hand_size == "bone_lengths":
+                self._scale_from_bone_lengths(normalized, target_pose.source)
+            else:
+                self._ingest_calibration_frame(normalized, target_pose.source)
+                return None
 
         keypoints = self._target_keypoints_in_urdf_frame(normalized)
 
@@ -575,6 +594,11 @@ class AdaptiveAnalyticalRetargeter:
         self._w_dir = float(cfg.get("w_dir", 10.0))
         self._w_full_hand = float(cfg.get("w_full_hand", 1.0))
         self._scaling = float(cfg.get("scaling", 1.0))
+        self._hand_size = str(cfg.get("hand_size", "key_vectors"))
+        if self._hand_size not in HAND_SIZE_METHODS:
+            raise ValueError(
+                f"retarget.hand_size must be one of {HAND_SIZE_METHODS}, got {self._hand_size!r}"
+            )
         self._palm_offset_cm = np.array(
             [0.0, 0.0, float(cfg.get("palm_offset_cm", DEFAULT_PALM_OFFSET_CM))], dtype=np.float64
         )
@@ -681,7 +705,24 @@ class AdaptiveAnalyticalRetargeter:
         palm = self._robot_palm_from_positions(neutral_positions)
         self._robot_thumb_base_cm = (neutral_positions[self._thumb_base_index] - palm) * M_TO_CM
         urdf_keyvectors = tip_pos - palm
-        self._urdf_keyvector_mags = 0.9 * np.linalg.norm(urdf_keyvectors, axis=1)
+        self._urdf_keyvector_mags = ROBOT_SIZE_FACTOR * np.linalg.norm(urdf_keyvectors, axis=1)
+        chains = np.stack(
+            [
+                neutral_positions[self._base_indices],
+                neutral_positions[self._pip_indices],
+                neutral_positions[self._dip_indices],
+                tip_pos,
+            ]
+        )  # (point, finger, xyz)
+        self._urdf_finger_lengths = ROBOT_SIZE_FACTOR * _chain_lengths(palm, chains)
+
+    def _scale_from_bone_lengths(self, normalized_joints: np.ndarray, source: str) -> None:
+        """Set the scale from this frame's finger lengths (robot / human, median finger)."""
+        joints = retargeter_utils.get_mano_joints_dict(normalized_joints, source)
+        palm = 0.5 * (joints["thumb"][0] + joints["pinky"][0])
+        chains = np.stack([joints[finger] for finger in FINGERS], axis=1)
+        ratios = self._urdf_finger_lengths / _chain_lengths(palm, chains)
+        self._finish_calibration(ratios, "bone lengths")
 
     def _ingest_calibration_frame(self, normalized_joints: np.ndarray, source: str) -> None:
         if not self._calibration_mags:
@@ -706,12 +747,17 @@ class AdaptiveAnalyticalRetargeter:
         all_mags = np.array(self._calibration_mags)
         median_mano = np.median(all_mags, axis=0)
         ratios = self._urdf_keyvector_mags / np.clip(median_mano, 1e-6, None)
+        self._finish_calibration(ratios, "palm to fingertip")
+
+    def _finish_calibration(self, ratios: np.ndarray, method: str) -> None:
         self._mano_scale = float(np.median(ratios))
         self._calibration_done = True
         self._last_qpos_phys = None
         self._filter.reset()
         logger.info(
-            "Adaptive retargeter auto-scale calibrated: mano_scale=%.4f (per-finger ratios=%s)",
+            "Adaptive retargeter auto-scale calibrated from %s: mano_scale=%.4f "
+            "(per-finger ratios=%s)",
+            method,
             self._mano_scale,
             np.round(ratios, 3).tolist(),
         )

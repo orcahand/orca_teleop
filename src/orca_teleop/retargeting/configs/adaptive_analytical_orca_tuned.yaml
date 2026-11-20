@@ -3,6 +3,10 @@
 type: adaptive_analytical
 
 retarget:
+  # How the human hand's size is measured, once per session: key_vectors (palm to fingertip
+  # over the first 30 frames; hold the hand open and flat then) or bone_lengths (the finger
+  # bones at the first frame: exact for a fixed skeleton, as a glove's; see manus.yaml).
+  hand_size: key_vectors
   # Solver evaluations per frame, at most. At 50 a fifth of the solves stopped unconverged, so
   # rounding-level input changes moved the output by up to 17 deg (glove and webcam replays,
   # 19 Nov 2026); a converged solve still stops early (ftol_abs), so the extra evaluations

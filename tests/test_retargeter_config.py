@@ -84,6 +84,8 @@ def test_the_glove_differs_from_the_webcam_only_where_it_says():
     webcam = load_config(default_config_path("adaptive_analytical"))
     assert glove["retarget"].pop("palm_offset_cm") == 0.0
     webcam["retarget"].pop("palm_offset_cm")
+    assert glove["retarget"].pop("hand_size") == "bone_lengths"
+    assert webcam["retarget"].pop("hand_size") == "key_vectors"
     assert glove == webcam
 
 
