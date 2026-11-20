@@ -61,8 +61,7 @@ hand to its neutral pose on connect; `--camera-index N` picks another camera
 `--viewer` also shows the hand model in the browser (http://localhost:8098). White
 is the commanded pose, orange the pose the motors report (read 10 times a second,
 `--readback-hz`), and a table lists both per joint. Where they part, the physical
-hand isn't following. It needs viser:
-`uv run --extra teleop --with viser==1.1.1 orca-teleop-hand … --viewer`.
+hand isn't following. Its package, viser, comes with the `teleop` extra.
 `--log-joints FILE` writes every command and motor read with its time (JSON lines),
 for measuring how far the hand lags behind its commands; add `--log-current` to log
 each motor's current and velocity with every read too (one more bus read, ~4 ms).
@@ -178,7 +177,7 @@ tries the file again every 5 s, so a file you add later is picked up.
 ### 4. Start teleop (teleop computer)
 
 ```bash
-uv run --extra teleop --extra manus --with viser==1.1.1 orca-teleop-hand --source manus --dry-run --viewer
+uv run --extra teleop --extra manus orca-teleop-hand --source manus --dry-run --viewer
 ```
 
 `--dry-run --viewer` shows the robot hand in the browser (http://localhost:8098)

@@ -30,9 +30,13 @@ mediapipe = [
 urdf-viz = [
     "meshcat",
 ]
+# The browser view of the hand model (--viewer).
+viewer = [
+    "viser==1.1.1",
+]
 # Everything the webcam-to-hand pipeline needs, so one sync covers a fresh clone.
 teleop = [
-    "orca_teleop[adaptive,mediapipe,urdf-viz]",
+    "orca_teleop[adaptive,mediapipe,urdf-viz,viewer]",
 ]
 adaptive = [
     "cmeel-tinyxml2<11",
