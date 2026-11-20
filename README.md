@@ -53,10 +53,18 @@ uv run --extra teleop orca-teleop-hand --show-video
 ```
 
 `--model_path` names the hand's model: a `config.yaml` of orca_core's models (default:
-`orcahand-right`). For another model, give the path orca_ui prints as `config` when it
-starts. The calibration is not in that file: when the hand connects, orca_core reads it
-from `~/.orca/hands/<hand id>/`, the folder named after the hand's board, where orca_ui
-saves it.
+`orcahand-right`). For another model, for example a left hand, give that model's file in
+the orca_core that teleop uses (orca_core completes only its own models, so a copy from
+orca_ui's folder fails):
+
+```bash
+uv run --extra teleop orca-teleop-hand --model_path "$(uv run --extra teleop python -c 'import orca_core, pathlib; print(pathlib.Path(orca_core.__file__).parent / "models/v2/orcahand-left/config.yaml")')"
+```
+
+The calibration is not in that file: when the hand connects, orca_core reads it from the
+hand's folder in `~/.orca/hands/`, where orca_ui saves it. If you used
+`--model_path ~/.orca_ui/hands/...` before, drop it: that file is an old copy of the
+model, and the calibration beside it is no longer read.
 
 Useful flags: `--dry-run` runs everything except the hand; `--home` moves the
 hand to its neutral pose on connect; `--camera-index N` picks another camera
@@ -75,9 +83,10 @@ when teleop quits. The log shows the value the motors took (they round and clamp
 Dynamixel motors the ramp acts only with a speed cap, which this flag does not set.
 
 Teleop uses orca_core 0.14, as orca_ui 0.6 does. The log's first line names the
-orca_core in use. orca_core 0.14 does not read a calibration made with an older
+orca_core in use. orca_core 0.14 does not look for a calibration made with an older
 orca_core (orca_ui 0.5 or older): unless the hand's board holds one, calibrate the
-hand once again after the update.
+hand once again in orca_ui after the update. If you do not, `orca-teleop-hand` runs the
+full calibration first, and the hand moves to its stops.
 
 If the camera loses your hand, the robot hand holds its pose; when your hand is
 seen again it eases over to it in half a second, as it does at start from
