@@ -527,10 +527,11 @@ class _Running:
         self.ctx = zmq.Context()
         self.sub = self.ctx.socket(zmq.SUB)
         self.sub.setsockopt_string(zmq.SUBSCRIBE, "")
-        probe = self.ctx.socket(zmq.PUB)
-        probe.bind("tcp://127.0.0.1:*")
-        address = probe.getsockopt_string(zmq.LAST_ENDPOINT)
-        probe.close()  # a free port for the bridge
+        # A free port for the bridge: a plain socket frees it on close (a ZMQ socket only
+        # later, in its IO thread, so under load the bridge's bind could still find it taken).
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            address = f"tcp://127.0.0.1:{probe.getsockname()[1]}"
         self.bridge = bridge.ManusBridge(address, calibration_dir)
         self.thread = threading.Thread(target=self.bridge.run, name="bridge")
         self.thread.start()
