@@ -352,6 +352,13 @@ class OrcaHandSink(RecordableSink):
             deg_s2,
             _deg_set(before.values()),
         )
+        unlimited = [m for m, p in now.items() if p is not None and p.acceleration_rad_s2 == 0]
+        if deg_s2 > 0 and unlimited:  # e.g. Feetech: steps of 8.7 deg/s^2, and 0 = no limit
+            logger.warning(
+                "Motors %s rounded %g deg/s^2 down to 0, which means no ramp: ask for more",
+                unlimited,
+                deg_s2,
+            )
 
     def _restore_servo_acceleration(self) -> None:
         before, self._acceleration_before = self._acceleration_before, {}

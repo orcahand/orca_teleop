@@ -507,6 +507,8 @@ class ManusBridge:
         # link must not put seconds of old hands in front of the new ones.
         socket.setsockopt(zmq.SNDHWM, 100)
         socket.setsockopt(zmq.LINGER, 0)
+        if "[" in self.bind:  # an IPv6 address
+            socket.setsockopt(zmq.IPV6, 1)
         try:
             socket.bind(self.bind)
             logger.info("Publishing glove frames on %s", self.bind)

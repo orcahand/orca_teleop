@@ -5,7 +5,7 @@ QUEUES_MAXSIZE = 8
 LOSS_TIMEOUT_S = 0.15
 # A slow steady stream raises the loss timeout to 3 frame intervals, never above this.
 LOSS_TIMEOUT_MAX_S = 0.5
-RAMP_S = 0.5  # as the orca_ui console: an S-curve over 0.5 s peaks at 1.5x travel per second
+RAMP_S = 0.5  # as the orca_ui console; the S-curve's speed peaks at 1.5x travel / RAMP_S
 # After this many failed motor reads in a row (viewer, joint log), wait READ_RETRY_S
 # before the next; a silent motor makes each read slow, and the commands come first.
 READ_FAILS_IN_ROW = 3

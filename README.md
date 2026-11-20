@@ -219,7 +219,8 @@ If you used gloves with this repo before: the Python bridge replaces our C++
 `manus-client`. Teleop can still read `manus-client` on port 2044, but only the bridge
 sends warnings. Run the glove with `orca-teleop-hand --source manus`; `--zmq-address` is
 now `--glove-address`. `python -m orca_teleop.pipeline` is retired: use `orca-teleop-hand`
-(add `--home` for its old start pose) or `orca-teleop-urdf`.
+(add `--home` for its old start pose) or `orca-teleop-urdf`; its `--visualize-landmarks`
+is gone.
 
 ### Warnings
 

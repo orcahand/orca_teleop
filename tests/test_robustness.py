@@ -867,7 +867,7 @@ def test_the_cli_refuses_a_negative_servo_acceleration(capsys):
     for bad in ("-1", "inf", "nan"):
         with pytest.raises(SystemExit):
             cli.teleop_hand(["--servo-acceleration", bad, "--dry-run"])
-        assert "--servo-acceleration must be 0 or more" in capsys.readouterr().err
+        assert "--servo-acceleration must be a number, 0 or more" in capsys.readouterr().err
 
 
 def test_an_unreadable_motor_stops_the_start_and_changes_nothing(monkeypatch):

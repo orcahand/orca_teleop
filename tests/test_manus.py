@@ -168,11 +168,12 @@ def test_a_message_round_trips_and_the_publisher_takes_its_hand():
     assert ManusPublisher(handedness="right").keypoints_from_message(raw) == (None, ["left"])
 
 
-def _free_tcp() -> tuple[object, object, str]:
+def _free_tcp(host: str = "127.0.0.1") -> tuple[object, object, str]:
     ctx = zmq.Context()
     sock = ctx.socket(zmq.PUB)
     sock.setsockopt(zmq.LINGER, 0)
-    sock.bind("tcp://127.0.0.1:*")
+    sock.setsockopt(zmq.IPV6, int("[" in host))
+    sock.bind(f"tcp://{host}:*")
     return ctx, sock, sock.getsockopt_string(zmq.LAST_ENDPOINT)
 
 
@@ -180,14 +181,14 @@ def _free_tcp() -> tuple[object, object, str]:
 def test_glove_frames_reach_the_ingress_server_as_landmarks(host):
     """Bridge socket -> ManusPublisher (ZMQ, then gRPC) -> IngressServer's queue, with
     another SDK stream's message right behind each hand (it must not displace the hand).
-    The server address may be a name or an IPv6 address in brackets."""
+    The server and bridge addresses may be a name or an IPv6 address in brackets."""
     if host == "[::1]" and not socket.has_ipv6:
         pytest.skip("no IPv6 on this computer")
     landmarks_q: queue.Queue = queue.Queue(maxsize=4)
     stop = threading.Event()
     server = IngressServer(landmarks_q, stop, port=0)
     port = server.start()
-    ctx, sock, address = _free_tcp()
+    ctx, sock, address = _free_tcp("[::1]" if host == "[::1]" else "127.0.0.1")
     publisher = ManusPublisher(f"{host}:{port}", "right", address)
     thread = threading.Thread(target=publisher.run, name="manus-publisher")
     thread.start()

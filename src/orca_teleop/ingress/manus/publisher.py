@@ -108,6 +108,8 @@ class ManusPublisher:
             # its other SDK streams on this socket too, and conflating could keep one of
             # those in place of a hand.
             sub.setsockopt_string(zmq.SUBSCRIBE, "")
+            if "[" in self._zmq_address:  # an IPv6 address
+                sub.setsockopt(zmq.IPV6, 1)
             sub.connect(self._zmq_address)
             logger.info("Listening for MANUS glove frames on %s", self._zmq_address)
             while not self._stop.is_set():
@@ -125,10 +127,7 @@ class ManusPublisher:
                     else:
                         used += 1
                         if self._recorder is not None:
-                            frame = self._recorder.add_time(time.time_ns())
-                            self._recorder.add_landmarks(
-                                frame, keypoints, NO_IMAGE, self._handedness, 1.0
-                            )
+                            self._record(keypoints)
                         with self._lock:  # set inside: else a frame can go out twice
                             self._latest_keypoints = keypoints
                             self._fresh.set()
@@ -158,6 +157,18 @@ class ManusPublisher:
             self._stop.set()
             sub.close(linger=0)
             ctx.term()
+
+    def _record(self, keypoints: np.ndarray) -> None:
+        try:
+            frame = self._recorder.add_time(time.time_ns())
+            self._recorder.add_landmarks(frame, keypoints, NO_IMAGE, self._handedness, 1.0)
+        except OSError as err:  # a full disk must not stop the hand
+            logger.error("Recording stopped, teleop goes on: %s", err)
+            recorder, self._recorder = self._recorder, None
+            try:
+                recorder.close()
+            except OSError:
+                pass
 
     def _frame_generator(self):
         """Yield a HandFrame for each new glove frame."""
@@ -199,7 +210,7 @@ class ManusPublisher:
                         f"{CONNECT_TIMEOUT_S:.0f}s. Start it before the publisher."
                     ) from err
                 time.sleep(0.1)
-        if self._record_dir is not None:  # after the probe, so a failed start leaves no folder
+        if self._record_dir is not None:  # after the probe: no folder if teleop never came up
             from orca_teleop.ingress.landmark_recording import LandmarkRecorder
 
             meta = {
