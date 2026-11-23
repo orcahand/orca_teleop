@@ -1,7 +1,7 @@
 JOIN_TIMEOUT = 3.0
 HEARTBEAT_INTERVAL = 0.1
 QUEUES_MAXSIZE = 8
-# Tracking loss (DD3): no frame for LOSS_TIMEOUT_S -> hold; the return eases in over RAMP_S.
+# Tracking loss: no frame for LOSS_TIMEOUT_S -> hold; the return eases in over RAMP_S.
 LOSS_TIMEOUT_S = 0.15
 # A slow steady stream raises the loss timeout to 3 frame intervals, never above this.
 LOSS_TIMEOUT_MAX_S = 0.5

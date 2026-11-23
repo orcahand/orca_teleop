@@ -110,7 +110,7 @@ def _get_latest(q: "queue.Queue[Any]", timeout: float) -> tuple[Any, int]:
 
 
 class MotionRamp:
-    """Hold on tracking loss, then ease back to the targets (DD3).
+    """Hold on tracking loss, then ease back to the targets.
 
     The hand keeps its last command while no frame arrives. The first command, and
     the first after a loss (see ``lost``), starts a ramp: for

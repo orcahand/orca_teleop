@@ -10,7 +10,7 @@ glove) are logged once when they appear and once when they clear; ``warnings`` h
 Usage::
 
     python -m orca_teleop.ingress.manus.publisher                                # bridge here
-    python -m orca_teleop.ingress.manus.publisher --glove-address 192.168.64.5:2044
+    python -m orca_teleop.ingress.manus.publisher --glove-address 192.168.1.10:2044
     python -m orca_teleop.ingress.manus.publisher --hand left --server robot:50051
 """
 
@@ -177,7 +177,6 @@ class ManusPublisher:
             self._recorder = LandmarkRecorder(self._record_dir, meta, 0.0)
         except OSError as err:  # a disk problem must not stop the hand
             logger.error("Recording did not start, teleop goes on: %s", err)
-            self._recording_stopped(err)
             return
         logger.info("Recording to %s", self._record_dir)
 
@@ -192,11 +191,6 @@ class ManusPublisher:
                 recorder.close()
             except OSError:
                 pass
-            self._recording_stopped(err)
-
-    def _recording_stopped(self, err: OSError) -> None:
-        """Called once when a disk error stops or prevents the recording (teleop goes on);
-        a subclass may show ``err``."""
 
     def _frame_generator(self):
         """Yield a HandFrame for each new glove frame."""

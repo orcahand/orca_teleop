@@ -179,7 +179,6 @@ class ManusBridge:
         # (t_ns, monotonic s, stream, the SDK's data, copied) per SDK callback, in order.
         self._frames: queue.SimpleQueue = queue.SimpleQueue()
         self._layouts: dict[int, tuple[list[int], str, list[int]]] = {}  # ids, side, rows
-        self._calibrated_since: dict[int, int] = {}  # glove id -> t_ns; 0: none loaded
         self._calibration_tried: dict[int, float] = {}  # glove id -> monotonic s of the last try
         self._licence_logged = False
         self._last_seen: dict[int, tuple[float, str]] = {}  # glove id -> (monotonic, side)
@@ -321,7 +320,6 @@ class ManusBridge:
         """When a glove is found or comes back, and every CALIBRATION_RETRY_S while it is
         uncalibrated: its side's .mcal, as manus-client does. A missing or rejected file: a
         warning, uncalibrated data."""
-        self._calibrated_since[glove_id] = 0
         self._calibration_tried[glove_id] = time.monotonic()
         path = self.calibration_dir / CALIBRATION_FILE.format(side=side)
         fix = "calibrate it with MANUS's SDK client (README, MANUS gloves)"
@@ -336,7 +334,6 @@ class ManusBridge:
         call = self.lib.CoreSdk_SetGloveCalibration(glove_id, buf, len(data), result)
         code = _name(self.enums.SetGloveCalibrationReturnCode, result[0])
         if self._ok(call) and result[0] == self.enums.SetGloveCalibrationReturnCode.Success:
-            self._calibrated_since[glove_id] = time.time_ns()
             logger.info("Loaded the %s glove's calibration %s (%s)", side, path, code)
             self._clear(f"uncalibrated_{side}", f"The {side} glove is calibrated now ({path})")
         else:
@@ -358,7 +355,7 @@ class ManusBridge:
             cached = (ids, *sort_nodes(infos, ids))
             self._layouts[glove_id] = cached
             logger.info("Glove %d is the %s hand, %d nodes", glove_id, cached[1], len(ids))
-            if glove_id not in self._calibrated_since:
+            if glove_id not in self._calibration_tried:
                 self._load_calibration(glove_id, cached[1])
         return cached[1], nodes[cached[2]]
 

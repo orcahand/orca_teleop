@@ -52,7 +52,7 @@ _FINGER_JOINTS = ("cmc", "mcp", "pip", "dip", "tip")
 
 # The wire order: the hand (wrist), each long finger from its CMC (the metacarpal's
 # base, which the 21 landmarks skip) to its tip, then the thumb. It is the order the
-# legacy C++ client (orcahand/manus-client) was aligned to on hardware in May 2026.
+# legacy C++ client (orcahand/manus-client) sends.
 MANUS_NODE_NAMES: tuple[str, ...] = (
     ("wrist",)
     + tuple(f"{f}_{j}" for f in _FINGERS for j in _FINGER_JOINTS)

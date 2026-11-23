@@ -259,7 +259,7 @@ def test_a_glove_stream_that_fails_ends_the_publisher():
 
 
 def test_a_bridge_address_may_leave_out_tcp():
-    assert wire.zmq_address("192.168.64.5:2044") == "tcp://192.168.64.5:2044"
+    assert wire.zmq_address("192.168.1.10:2044") == "tcp://192.168.1.10:2044"
     assert wire.zmq_address("tcp://10.0.0.2:2044") == "tcp://10.0.0.2:2044"
     from orca_teleop.constants import MANUS_BRIDGE_PORT
 
@@ -769,7 +769,7 @@ def test_only_a_glove_silent_for_lost_after_s_is_lost_and_its_next_frame_clears_
     the_bridge.ffi = module.ffi
     rows = list(range(25))
     the_bridge._layouts = {11: (rows, "right", rows), 22: (rows, "left", rows)}
-    the_bridge._calibrated_since = {11: 0, 22: 0}
+    the_bridge._calibration_tried = {11: time.monotonic(), 22: time.monotonic()}
     now = time.monotonic()
     the_bridge._last_seen = {11: (now, "right"), 22: (now - 2 * bridge.LOST_AFTER_S, "left")}
     caplog.set_level("INFO", logger="manus_bridge")
@@ -791,7 +791,7 @@ def test_two_gloves_on_one_side_send_the_first_and_say_so(monkeypatch, caplog):
     the_bridge.ffi = module.ffi
     rows = list(range(25))
     the_bridge._layouts = {11: (rows, "right", rows), 33: (rows, "right", rows)}
-    the_bridge._calibrated_since = {11: 0, 33: 0}
+    the_bridge._calibration_tried = {11: time.monotonic(), 33: time.monotonic()}
     info = module.ffi.new("RawSkeletonInfo*")
     first, second = np.zeros((25, 7)), np.ones((25, 7))
     hands, _ = the_bridge._hands({11: (rows, first, info), 33: (rows, second, info)})
@@ -808,7 +808,7 @@ def test_a_hand_frame_that_waited_too_long_is_skipped_and_reported(monkeypatch):
     the_bridge.ffi = module.ffi
     rows = list(range(25))
     the_bridge._layouts = {11: (rows, "right", rows)}
-    the_bridge._calibrated_since = {11: 0}
+    the_bridge._calibration_tried = {11: time.monotonic()}
     info = module.ffi.new("RawSkeletonInfo*")
     now = time.monotonic()
     for t_ns, queued in ((1, now - 1.0), (2, now)):
@@ -928,7 +928,7 @@ def test_a_missing_or_rejected_calibration_streams_uncalibrated_and_says_so(
     caplog.set_level("INFO", logger="manus_bridge")
 
     the_bridge._load_calibration(5, "left")  # no file
-    assert the_bridge._calibrated_since[5] == 0 and "CoreSdk_SetGloveCalibration" not in calls
+    assert "uncalibrated_left" in the_bridge.warnings and "CoreSdk_SetGloveCalibration" not in calls
     assert "Streaming UNCALIBRATED left glove" in caplog.text
     assert "Calibration_left.mcal" in caplog.text and "MANUS's SDK client" in caplog.text
 
@@ -936,15 +936,15 @@ def test_a_missing_or_rejected_calibration_streams_uncalibrated_and_says_so(
     module.lib.calibration_result = 2  # VersionError
     caplog.clear()
     the_bridge._load_calibration(6, "right")
-    assert the_bridge._calibrated_since[6] == 0 and module.lib.calibrations == {6: b"too old"}
+    assert "uncalibrated_right" in the_bridge.warnings and module.lib.calibrations == {
+        6: b"too old"
+    }
     assert "Streaming UNCALIBRATED right glove: the MANUS SDK rejected" in caplog.text
     assert "VersionError" in caplog.text
 
     module.lib.calibration_result = 1  # Success
     caplog.clear()
-    before = time.time_ns()
     the_bridge._load_calibration(7, "right")
-    assert the_bridge._calibrated_since[7] >= before
     assert "uncalibrated_right" not in the_bridge.warnings  # a loaded .mcal clears it
     assert "Loaded the right glove's calibration" in caplog.text and "Success" in caplog.text
 
@@ -989,7 +989,7 @@ def test_every_frame_goes_out_in_order(monkeypatch):
     the_bridge.ffi = module.ffi
     rows = list(range(25))
     the_bridge._layouts = {11: (rows, "right", rows), 22: (rows, "left", rows)}
-    the_bridge._calibrated_since = {11: 1_000, 22: 0}  # the left one has no .mcal
+    the_bridge._calibration_tried = {11: time.monotonic(), 22: time.monotonic()}
     info = module.ffi.new("RawSkeletonInfo*")
     for t_ns in (500, 999, 1_000, 1_001, 2_000):
         nodes = np.full((25, 7), float(t_ns))
@@ -1141,7 +1141,7 @@ def test_record_refuses_a_used_folder_before_the_hand_starts(tmp_path, capsys):
     assert args.record == str(tmp_path / "new")
 
 
-def test_a_disk_error_stops_only_the_recording_and_says_why():
+def test_a_disk_error_stops_only_the_recording_and_says_why(caplog):
     class Full:
         closed = False
 
@@ -1151,17 +1151,12 @@ def test_a_disk_error_stops_only_the_recording_and_says_why():
         def close(self):
             self.closed = True
 
-    class Seen(ManusPublisher):
-        errors: list = []
-
-        def _recording_stopped(self, err):
-            self.errors.append(err)
-
-    publisher = Seen(handedness="right")
+    publisher = ManusPublisher(handedness="right")
     publisher._recorder = recorder = Full()
     publisher._record(np.zeros((21, 3)))
     assert publisher._recorder is None and recorder.closed
-    assert [e.errno for e in Seen.errors] == [28]
+    assert "Recording stopped, teleop goes on" in caplog.text
+    assert "No space left on device" in caplog.text
 
 
 def test_the_recording_waits_for_the_hand_so_a_failed_start_leaves_no_folder(tmp_path):

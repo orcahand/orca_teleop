@@ -30,7 +30,11 @@ def _new_record_dir(path: str) -> str:
 
 def _common_parser(description: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description)
-    parser.add_argument("--model_path", default=None, help="OrcaHand model config")
+    parser.add_argument(
+        "--model_path",
+        default=None,
+        help="OrcaHand model config.yaml (default: orca_core's orcahand-right)",
+    )
     parser.add_argument("--urdf_path", default=None, help="Hand URDF the retargeter solves against")
     parser.add_argument(
         "--port", type=int, default=DEFAULT_PORT, help=f"gRPC port (default: {DEFAULT_PORT})"

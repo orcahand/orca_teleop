@@ -10,7 +10,7 @@ thumb comes first everywhere. Record a session with ``--record DIR`` on
     uv run --no-sync python scripts/fidelity_inspector.py recordings/thumb-01 --no-viewer
 
     # Score + 3D viewer with a timeline at http://localhost:8091
-    uv run --no-sync --with viser==1.1.1 python scripts/fidelity_inspector.py recordings/thumb-01
+    uv run --extra teleop python scripts/fidelity_inspector.py recordings/thumb-01
 
 What is compared (all in the robot's frame, anchored at the robot's palm point,
 exactly as the solver's loss sees it):
