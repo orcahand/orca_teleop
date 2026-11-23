@@ -30,10 +30,27 @@ message Pose {
     Quaternion orientation = 2;
 }
 
+// Something the bridge warns about (licence, an uncalibrated or lost glove), with a code
+// that stays the same while it lasts, e.g. uncalibrated_left.
+message BridgeWarning {
+    string code = 1;
+    string text = 2;
+}
+
 message GloveState{
     Header header = 1;
     repeated Pose left_mocap_pose = 2;
     repeated Pose right_mocap_pose = 3;
+    // Added by bridge.py; parsers of fields 1-3 (and the C++ manus-client) skip them. These
+    // messages may have no hands: a reader keeping only the newest message (ZMQ CONFLATE)
+    // would lose hands to them.
+    // The MANUS SDK stream this message carries: raw_skeleton (with the poses above),
+    // ergonomics, raw_device_data, landscape or system; or status (only the warnings).
+    string sdk_stream = 4;
+    // That stream's MANUS SDK structs as JSON, with ManusSDKTypes.h's field names.
+    string sdk_json = 5;
+    // The bridge's active warnings, in every message while they last.
+    repeated BridgeWarning warnings = 6;
 }
 
 

@@ -11,6 +11,10 @@ A recording is a folder:
 
 Frames without a line in ``landmarks.jsonl`` had no accepted hand. Replaying the
 world landmarks reproduces exactly what the retargeter received.
+
+A glove session (``--source manus --record``) has no video: ``frames.csv`` holds the
+time each hand arrived, ``image`` is zeros, and it keeps every hand that arrived (also
+one a newer hand replaced before it was sent).
 """
 
 from __future__ import annotations
@@ -45,10 +49,12 @@ class LandmarkRecorder:
         (self.path / "meta.json").write_text(
             json.dumps({"format": FORMAT, "version": VERSION, **meta}, indent=2)
         )
-        self._frames = open(self.path / "frames.csv", "w", newline="")
+        self._frames = open(self.path / "frames.csv", "w", newline="", buffering=1)
         self._frames_csv = csv.writer(self._frames)
         self._frames_csv.writerow(["frame", "capture_time_ns"])
-        self._landmarks = open(self.path / "landmarks.jsonl", "w")
+        self._landmarks = open(
+            self.path / "landmarks.jsonl", "w", buffering=1
+        )  # a killed process loses no line
 
     def add_frame(self, frame_bgr: np.ndarray, capture_time_ns: int) -> int:
         """Store one captured frame; returns its index."""
@@ -62,6 +68,14 @@ class LandmarkRecorder:
                     (width, height),
                 )
             self._video.write(frame_bgr)
+            index = self._n_frames
+            self._frames_csv.writerow([index, capture_time_ns])
+            self._n_frames += 1
+            return index
+
+    def add_time(self, capture_time_ns: int) -> int:
+        """Store a frame without video (a glove hand); returns its index."""
+        with self._lock:
             index = self._n_frames
             self._frames_csv.writerow([index, capture_time_ns])
             self._n_frames += 1

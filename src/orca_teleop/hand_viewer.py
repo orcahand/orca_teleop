@@ -5,7 +5,7 @@ pose the motors report, with a per-joint table of both and their difference. Whe
 the two hands part, the physical hand isn't doing what it was told (slack, a stall,
 an off calibration). ``HandMeshes`` draws and poses model hands in a viser scene.
 
-viser is not in an extra yet: run with ``uv run --with viser==1.1.1 …``.
+viser comes with the ``teleop`` extra (``viewer`` alone has only it).
 """
 
 from __future__ import annotations
@@ -173,7 +173,7 @@ class HandViewer:
             import viser
         except ImportError:
             raise SystemExit(
-                "The viewer needs viser: run with `uv run --with viser==1.1.1 …`"
+                "The viewer needs viser: uv sync --extra teleop (or --extra viewer)"
             ) from None
         self.port = port
         self._server = viser.ViserServer(host="127.0.0.1", port=port, label="ORCA hand viewer")

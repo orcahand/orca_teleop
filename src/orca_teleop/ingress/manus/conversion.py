@@ -1,13 +1,28 @@
-"""Manus glove coordinate conversions for the teleop pipeline.
+"""MANUS glove skeleton -> the retargeter's 21 hand landmarks.
 
-All Manus-specific coordinate handling lives here so the rest of the pipeline
-(retargeter, sim) stays source-agnostic.
+The wire contract between a glove bridge and ``publisher.py`` (``GloveState`` over ZMQ,
+see ``source/manus_stream.proto``): each hand is a list of 25 node poses in
+``MANUS_NODE_NAMES`` order, positions in metres, in the MANUS SDK's world coordinates
+set up as Z up, X from the viewer, right-handed (``CoordinateSystemVUH`` with
+``useWorldCoordinates``). ``bridge.py`` guarantees that order by sorting the SDK's
+nodes by their ``NodeInfo`` (chain and joint type); the SDK's own array order is not
+documented and differs between SDK versions and clients, so nothing here relies on it.
+
+The retargeter derives its palm frame from the points themselves, so any right-handed
+frame works and no axis remapping is needed. Only a mirror would break it (a right
+hand would turn into a left one).
+
+This module needs only numpy, so ``bridge.py`` can load it on the glove computer
+without the rest of orca_teleop.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 
+# The retargeter's 21 landmarks, MediaPipe's order.
 MANO_LANDMARK_NAMES: tuple[str, ...] = (
     "wrist",
     "thumb_cmc",
@@ -32,101 +47,105 @@ MANO_LANDMARK_NAMES: tuple[str, ...] = (
     "pinky_tip",
 )
 
-# Manus has one additional non-thumb CMC position per finger. The teleop
-# pipeline consumes the MediaPipe/MANO-style 21-point surface, so extra
-# CMCs are intentionally skipped.
-MANUS_POSITION_JOINTS_FOR_MANO: tuple[str, ...] = (
-    "Hand",
-    "Thumb_CMC",
-    "Thumb_MCP",
-    "Thumb_IP",
-    "Thumb_TIP",
-    "Index_MCP",
-    "Index_PIP",
-    "Index_DIP",
-    "Index_TIP",
-    "Middle_MCP",
-    "Middle_PIP",
-    "Middle_DIP",
-    "Middle_TIP",
-    "Ring_MCP",
-    "Ring_PIP",
-    "Ring_DIP",
-    "Ring_TIP",
-    "Pinky_MCP",
-    "Pinky_PIP",
-    "Pinky_DIP",
-    "Pinky_TIP",
+_FINGERS = ("index", "middle", "ring", "pinky")
+_FINGER_JOINTS = ("cmc", "mcp", "pip", "dip", "tip")
+
+# The wire order: the hand (wrist), each long finger from its CMC (the metacarpal's
+# base, which the 21 landmarks skip) to its tip, then the thumb. It is the order the
+# legacy C++ client (orcahand/manus-client) sends.
+MANUS_NODE_NAMES: tuple[str, ...] = (
+    ("wrist",)
+    + tuple(f"{f}_{j}" for f in _FINGERS for j in _FINGER_JOINTS)
+    + ("thumb_cmc", "thumb_mcp", "thumb_ip", "thumb_tip")
 )
+NUM_NODES = len(MANUS_NODE_NAMES)  # 25
 
-# Manus 25-joint → MANO 21-joint index mapping.
-# Manus SDK native raw skeleton order (thumb is LAST, not first):
-#   0       Hand root (wrist)
-#   1-5     Index  (CMC, MCP, PIP, DIP, TIP)     — 5 joints
-#   6-10    Middle (CMC, MCP, PIP, DIP, TIP)     — 5 joints
-#   11-15   Ring   (CMC, MCP, PIP, DIP, TIP)     — 5 joints
-#   16-20   Pinky  (CMC, MCP, PIP, DIP, TIP)     — 5 joints
-#   21-24   Thumb  (CMC, MCP, IP, TIP)           — 4 joints
-# MANO expects: wrist, thumb(4), index(4), middle(4), ring(4), pinky(4) = 21.
-# Also, we entirely skip the non-thumb CMC joints at indices 1, 6, 11, 16.
-MANUS_TO_MANO = [0, 21, 22, 23, 24, 2, 3, 4, 5, 7, 8, 9, 10, 12, 13, 14, 15, 17, 18, 19, 20]
+# Wire index of each of the 21 landmarks.
+MANUS_TO_MANO: list[int] = [MANUS_NODE_NAMES.index(name) for name in MANO_LANDMARK_NAMES]
+
+# MANUS SDK enum values (ManusSDKTypes.h) by name, for when the SDK's own enum classes
+# can't name them.
+CHAIN_TYPES = {
+    5: "FingerThumb",
+    6: "FingerIndex",
+    7: "FingerMiddle",
+    8: "FingerRing",
+    9: "FingerPinky",
+    13: "Hand",
+}
+FINGER_JOINT_TYPES = {1: "Metacarpal", 2: "Proximal", 3: "Intermediate", 4: "Distal", 5: "Tip"}
+
+_CHAIN_FINGER = {
+    "FingerThumb": "thumb",
+    "FingerIndex": "index",
+    "FingerMiddle": "middle",
+    "FingerRing": "ring",
+    "FingerPinky": "pinky",
+}
+# A MANUS node sits at the joint at the base of its bone: the Metacarpal node at the
+# CMC, Proximal at the MCP, Intermediate at the PIP, Distal at the DIP. The thumb has
+# no Distal node (ManusSDKTypes.h: "thumb doesn't have it"), so its Intermediate node
+# is the IP joint.
+_FINGER_JOINT = {
+    "Metacarpal": "cmc",
+    "Proximal": "mcp",
+    "Intermediate": "pip",
+    "Distal": "dip",
+    "Tip": "tip",
+}
+_THUMB_JOINT = {
+    "Metacarpal": "cmc",
+    "Proximal": "mcp",
+    "Intermediate": "ip",
+    "Distal": "ip",
+    "Tip": "tip",
+}
 
 
-def manus_zmq_to_mano_keypoints(positions: np.ndarray) -> np.ndarray:
-    """Convert 21-joint ZMQ positions to wrist-relative keypoints.
+def node_name(chain_type: str, finger_joint_type: str) -> str | None:
+    """Our name for a MANUS node, from its ``NodeInfo`` enum names; None if unused."""
+    if chain_type == "Hand":
+        return "wrist"
+    finger = _CHAIN_FINGER.get(chain_type)
+    if finger is None:
+        return None
+    joint = (_THUMB_JOINT if finger == "thumb" else _FINGER_JOINT).get(finger_joint_type)
+    return None if joint is None else f"{finger}_{joint}"
 
-    The native ManusClient C++ client publishes global-frame positions in a
-    right-handed Z-up frame (X-from-viewer, Y-left, Z-up) with no additional
-    transforms.  This function makes them wrist-relative and passes them
-    straight through — the retargeter's normalization step
-    (``get_normalized_local_manohand_joint_pos``) derives its own coordinate
-    frame from hand geometry, so no axis remapping is needed.
 
-    The previous Sharpa-based client applied its own coordinate transforms in
-    C++, which were compensated here with a ``[Y, X, -Z]`` axis swap.  That
-    swap is commented out now that the native client forwards raw SDK data.
+def wire_order(names: Sequence[str | None]) -> list[int]:
+    """For each of ``MANUS_NODE_NAMES``, its index in a skeleton whose nodes are ``names``.
 
-    Args:
-        positions: ``(21, 3)`` array already indexed to the 21 MANO joints.
-
-    Returns:
-        ``(21, 3)`` float32 array, wrist-relative, meters.
+    Raises ``ValueError`` naming what is missing or doubled: a wrong guess would move
+    the robot's fingers wrongly instead of failing.
     """
-    kp = np.array(positions, dtype=np.float32)
-    kp = kp - kp[0:1, :]  # make wrist-relative
-
-    return kp
-
-
-def manus_unity_positions_to_mano_keypoints(positions_cm: np.ndarray) -> np.ndarray:
-    """Convert selected Manus Unity-style positions to teleop hand landmarks.
-
-    Args:
-        positions_cm: ``(21, 3)`` or ``(N, 21, 3)`` array in centimeters,
-            ordered as ``MANUS_POSITION_JOINTS_FOR_MANO``.
-
-    Returns:
-        ``(21, 3)`` or ``(N, 21, 3)`` float32 array in meters, wrist-relative,
-        ordered as ``MANO_LANDMARK_NAMES``. The coordinates are ready to be
-        flattened row-major into the teleop gRPC ``HandFrame.keypoints`` field.
-
-    Coordinate contract:
-        keypoints_m = [-X_cm, Z_cm, -Y_cm] / 100
-        after subtracting ``Hand_Position`` from every selected joint.
-    """
-    positions = np.asarray(positions_cm, dtype=np.float32)
-    single_frame = positions.ndim == 2
-    if single_frame:
-        positions = positions[None, ...]
-
-    if positions.ndim != 3 or positions.shape[1:] != (21, 3):
+    index: dict[str, int] = {}
+    doubled = set()
+    for i, name in enumerate(names):
+        if name is None:
+            continue
+        if name in index:
+            doubled.add(name)
+        index[name] = i
+    missing = [name for name in MANUS_NODE_NAMES if name not in index]
+    if missing or doubled:
         raise ValueError(
-            f"positions_cm must have shape (21, 3) or (N, 21, 3); got {positions.shape}"
+            f"MANUS skeleton nodes don't match a hand: missing {missing}, doubled "
+            f"{sorted(doubled)} (nodes: {list(names)})"
         )
+    return [index[name] for name in MANUS_NODE_NAMES]
 
-    relative_cm = positions - positions[:, [0], :]
-    keypoints = np.empty_like(relative_cm, dtype=np.float32)
-    keypoints[..., 0] = -relative_cm[..., 0] / 100.0
-    keypoints[..., 1] = relative_cm[..., 2] / 100.0
-    keypoints[..., 2] = -relative_cm[..., 1] / 100.0
-    return keypoints[0] if single_frame else keypoints
+
+def wire_to_keypoints(nodes: np.ndarray) -> np.ndarray:
+    """``(25, 3)`` wire-order node positions -> the retargeter's ``(21, 3)`` landmarks.
+
+    More than 25 rows: the first 25 are used, as the publisher before the bridge did.
+
+    Wrist-relative float32 metres in MediaPipe's landmark order, ready for
+    ``HandFrame.keypoints``. No axis change: see the module docstring.
+    """
+    nodes = np.asarray(nodes, dtype=np.float32)
+    if nodes.ndim != 2 or nodes.shape[0] < NUM_NODES or nodes.shape[1] != 3:
+        raise ValueError(f"expected ({NUM_NODES}, 3) node positions, got {nodes.shape}")
+    keypoints = nodes[:NUM_NODES][MANUS_TO_MANO]
+    return keypoints - keypoints[0:1]

@@ -1,15 +1,15 @@
 """Teleoperate the simulated ORCA hand via the Manus glove pipeline.
 
-Start SharpaManusClient.out first, then run this script. It launches a
-Manus ZMQ→gRPC publisher and the full retargeting pipeline against an
-``orca_sim`` Gymnasium env.
+Start the glove bridge (``ingress/manus/bridge.py``, or ``fake_bridge`` without
+gloves) first, then run this script. It launches a MANUS ZMQ→gRPC publisher and the
+full retargeting pipeline against an ``orca_sim`` Gymnasium env.
 
 Examples:
-    # Default: right hand sim, expects Manus C++ client on tcp://127.0.0.1:2044
+    # Default: right hand sim, expects the glove bridge on tcp://127.0.0.1:2044
     python scripts/manus_test.py
 
     # Left hand, custom ZMQ address
-    python scripts/manus_test.py --hand left --zmq-address tcp://192.168.1.10:2044
+    python scripts/manus_test.py --hand left --glove-address 192.168.1.10:2044
 
     # Headless rendering
     python scripts/manus_test.py --render-mode rgb_array
@@ -24,7 +24,7 @@ import logging
 # extensions segfault.
 import torch._dynamo  # noqa: F401
 
-from orca_teleop.constants import DEFAULT_PORT
+from orca_teleop.constants import DEFAULT_MANUS_ADDRESS, DEFAULT_PORT
 from orca_teleop.pipeline import run_manus_local
 from orca_teleop.sim import OrcaHandSimSink
 
@@ -60,9 +60,9 @@ def main() -> None:
         help="Hand to track (default: right)",
     )
     parser.add_argument(
-        "--zmq-address",
-        default="tcp://127.0.0.1:2044",
-        help="ZMQ address for Manus C++ client (default: tcp://127.0.0.1:2044)",
+        "--glove-address",
+        default=DEFAULT_MANUS_ADDRESS,
+        help=f"The glove bridge's address, [tcp://]HOST:PORT (default: {DEFAULT_MANUS_ADDRESS})",
     )
     parser.add_argument(
         "--visualize-landmarks",
@@ -91,7 +91,7 @@ def main() -> None:
         urdf_path=args.urdf_path,
         port=args.port,
         handedness=args.hand,
-        zmq_address=args.zmq_address,
+        zmq_address=args.glove_address,
         sink=sink,
         visualize_landmarks=args.visualize_landmarks,
     )

@@ -51,7 +51,7 @@ Example usage:
         --task "pick up the block" --num-episodes 5
 
     # Teleop the REAL hand with Manus gloves, ending each episode by pressing SPACE
-    # (prerequisite: 'manus-client run' streaming glove data)
+    # (prerequisite: the glove bridge streaming glove data; README, MANUS gloves)
     python scripts/record_dataset.py --repo-id $HF_USERNAME/orca-manus \\
         --task "pick up the block" --backend hardware \\
         --local --source manus --hand right \\
@@ -86,6 +86,7 @@ from orca_teleop.cameras import (
 from orca_teleop.constants import (
     DEFAULT_CONFIDENCE,
     DEFAULT_HAND,
+    DEFAULT_MANUS_ADDRESS,
     DEFAULT_PORT,
     JOIN_TIMEOUT,
     QUEUES_MAXSIZE,
@@ -389,7 +390,7 @@ def _main_record(argv: list[str]) -> None:
         default="mediapipe",
         help=(
             "Input publisher and landmark convention: 'mediapipe' webcam (default), "
-            "'manus' gloves (requires 'manus-client run'), or 'metaquest' WebXR in "
+            "'manus' gloves (requires the glove bridge), or 'metaquest' WebXR in "
             "Quest Browser. With --local the matching publisher is launched here; "
             "without --local, launch it separately and point it at this ingress."
         ),
@@ -401,9 +402,10 @@ def _main_record(argv: list[str]) -> None:
         help=f"Which hand the local publisher streams (default: {DEFAULT_HAND}).",
     )
     parser.add_argument(
-        "--zmq-address",
-        default="tcp://127.0.0.1:2044",
-        help="ZMQ address of the Manus C++ client for --source manus (default: tcp://127.0.0.1:2044).",
+        "--glove-address",
+        default=DEFAULT_MANUS_ADDRESS,
+        help=f"The MANUS glove bridge for --source manus, [tcp://]HOST:PORT "
+        f"(default: {DEFAULT_MANUS_ADDRESS}).",
     )
     parser.add_argument(
         "--quest-host",
@@ -553,7 +555,7 @@ def _main_record(argv: list[str]) -> None:
             if args.source == "manus":
                 publisher_process = ctx.Process(
                     target=_manus_publisher,
-                    args=(args.port, args.hand, args.zmq_address),
+                    args=(args.port, args.hand, args.glove_address),
                     name="manus-publisher",
                     daemon=True,
                 )

@@ -1,11 +1,11 @@
 JOIN_TIMEOUT = 3.0
 HEARTBEAT_INTERVAL = 0.1
 QUEUES_MAXSIZE = 8
-# Tracking loss (DD3): no frame for LOSS_TIMEOUT_S -> hold; the return eases in over RAMP_S.
+# Tracking loss: no frame for LOSS_TIMEOUT_S -> hold; the return eases in over RAMP_S.
 LOSS_TIMEOUT_S = 0.15
 # A slow steady stream raises the loss timeout to 3 frame intervals, never above this.
 LOSS_TIMEOUT_MAX_S = 0.5
-RAMP_S = 0.25
+RAMP_S = 0.5  # as the orca_ui console; the S-curve's speed peaks at 1.5x travel / RAMP_S
 # After this many failed motor reads in a row (viewer, joint log), wait READ_RETRY_S
 # before the next; a silent motor makes each read slow, and the commands come first.
 READ_FAILS_IN_ROW = 3
@@ -18,6 +18,9 @@ WRIST_MOTOR_IDX = 16
 DEFAULT_PORT = 50051
 DEFAULT_HAND = "right"
 DEFAULT_CONFIDENCE = 0.7
+# Where the MANUS glove bridge publishes (ingress/manus/bridge.py; wire.DEFAULT_PORT).
+MANUS_BRIDGE_PORT = 2044
+DEFAULT_MANUS_ADDRESS = f"tcp://127.0.0.1:{MANUS_BRIDGE_PORT}"
 _NUM_KEYPOINTS = 21
 _COORDS_PER_POINT = 3
 _EXPECTED_LEN = _NUM_KEYPOINTS * _COORDS_PER_POINT  # 63

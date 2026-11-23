@@ -40,11 +40,13 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
 import numpy as np
 from orca_core import OrcaHand, OrcaJointPositions
+from orca_core.hardware.motor_client import ServoProfile
 
 # ``OpenCVCameraConfig`` is also re-exported here for callers that historically
 # imported it from ``orca_teleop.pipeline``.
@@ -52,6 +54,7 @@ from orca_teleop.cameras import CameraManager, OpenCVCameraConfig
 from orca_teleop.constants import (
     DEFAULT_CONFIDENCE,
     DEFAULT_HAND,
+    DEFAULT_MANUS_ADDRESS,
     DEFAULT_PORT,
     HEARTBEAT_INTERVAL,
     JOIN_TIMEOUT,
@@ -107,7 +110,7 @@ def _get_latest(q: "queue.Queue[Any]", timeout: float) -> tuple[Any, int]:
 
 
 class MotionRamp:
-    """Hold on tracking loss, then ease back to the targets (DD3).
+    """Hold on tracking loss, then ease back to the targets.
 
     The hand keeps its last command while no frame arrives. The first command, and
     the first after a loss (see ``lost``), starts a ramp: for
@@ -266,6 +269,14 @@ class OrcaHandSink(RecordableSink):
     (velocity in rad/s) per motor id, from a second bus read right after (about 4 ms;
     orca_core has no public call giving joints and currents in one). The log never
     overwrites a file: an existing one fails at ``connect``, before the hand.
+
+    ``servo_acceleration_deg_s2`` sets the motors' own acceleration ramp for the session,
+    after ``init_joints`` (0 = no ramp: each command is a step); ``close`` puts the values
+    from before back. If a session ends without ``close`` (killed, power cut), a Feetech
+    hand gets orca_core's default again at the next ``init_joints``; a Dynamixel hand
+    keeps the session's value until its motors lose power or change operating mode. On
+    Dynamixel motors the ramp acts only with a speed cap (Profile Velocity), which this
+    does not set.
     """
 
     def __init__(
@@ -278,6 +289,7 @@ class OrcaHandSink(RecordableSink):
         readback_hz: float = 10.0,
         joint_log: str | None = None,
         log_current: bool = False,
+        servo_acceleration_deg_s2: float | None = None,
     ) -> None:
         self._model_path = model_path
         self._hand = OrcaHand(model_path)
@@ -292,6 +304,8 @@ class OrcaHandSink(RecordableSink):
         self._log_current = log_current
         self._joint_log: Any | None = None
         self._connected = False  # the bus is open: init may have switched the torque on
+        self._servo_acceleration = servo_acceleration_deg_s2
+        self._acceleration_before: dict[int, float] = {}  # motor id -> rad/s^2, for close()
         self._cameras = CameraManager(camera_configs or [])
 
     def connect(self) -> None:
@@ -310,6 +324,8 @@ class OrcaHandSink(RecordableSink):
                 raise RuntimeError(f"Robot failed to connect: {message}")
             self._connected = True
             self._hand.init_joints(move_to_neutral=self._move_to_neutral)
+            if self._servo_acceleration is not None:
+                self._set_servo_acceleration(self._servo_acceleration)
         else:
             logger.warning(
                 "OrcaHandSink: hardware connection skipped (connect_hardware=False) — "
@@ -318,6 +334,40 @@ class OrcaHandSink(RecordableSink):
             )
         self._cameras.open()
         self._cameras.ensure_live()
+
+    def _set_servo_acceleration(self, deg_s2: float) -> None:
+        before = self._hand.get_servo_profile()
+        unread = [mid for mid, p in before.items() if p is None or p.acceleration_rad_s2 is None]
+        if unread:  # it could not be put back on them
+            raise RuntimeError(
+                f"Could not read the servo acceleration of motors {unread}; "
+                "--servo-acceleration changes nothing"
+            )
+        self._acceleration_before = {mid: p.acceleration_rad_s2 for mid, p in before.items()}
+        wanted = ServoProfile(acceleration_rad_s2=np.radians(deg_s2))
+        self._hand.set_servo_profile({mid: wanted for mid in before})
+        now = self._hand.get_servo_profile()  # the motors round and clamp
+        logger.info(
+            "Servo acceleration for this session: %s deg/s^2 (asked %g, 0 = no ramp; was %s)",
+            _deg_set(now.values()),
+            deg_s2,
+            _deg_set(before.values()),
+        )
+        unlimited = [m for m, p in now.items() if p is not None and p.acceleration_rad_s2 == 0]
+        if deg_s2 > 0 and unlimited:  # e.g. Feetech: steps of 8.7 deg/s^2, and 0 = no limit
+            logger.warning(
+                "Motors %s rounded %g deg/s^2 down to 0, which means no ramp: ask for more",
+                unlimited,
+                deg_s2,
+            )
+
+    def _restore_servo_acceleration(self) -> None:
+        before, self._acceleration_before = self._acceleration_before, {}
+        if before:
+            self._hand.set_servo_profile(
+                {mid: ServoProfile(acceleration_rad_s2=a) for mid, a in before.items()}
+            )
+            logger.info("Servo acceleration put back")
 
     @property
     def joint_ids(self) -> list[str]:
@@ -363,7 +413,7 @@ class OrcaHandSink(RecordableSink):
     def current_positions(self) -> OrcaJointPositions | None:
         """The hand's pose before teleop starts; the start ramp begins there.
 
-        Never from a failed read: orca_core 0.13 then returns the motors' cached
+        Never from a failed read: orca_core 0.14 then returns the motors' cached
         positions (zeros before the first good read), a far-off pose the first
         commands would jump from. So it tries 3 times, then refuses to start.
         """
@@ -494,6 +544,10 @@ class OrcaHandSink(RecordableSink):
         try:
             if self._connected:
                 try:
+                    self._restore_servo_acceleration()
+                except Exception:  # the torque must still go off
+                    logger.exception("Putting the servo acceleration back failed")
+                try:
                     unconfirmed = self._hand.disable_torque() or []
                 finally:  # also after a failed torque-off: disconnect retries it, closes the port
                     self._connected = False
@@ -517,6 +571,13 @@ class OrcaHandSink(RecordableSink):
             if self._joint_log is not None:
                 self._joint_log.close()
                 self._joint_log = None
+
+
+def _deg_set(profiles: Any) -> list[float]:
+    """The distinct accelerations of ``ServoProfile``s, in deg/s^2."""
+    return sorted(
+        {round(float(np.degrees(p.acceleration_rad_s2)), 1) for p in profiles if p is not None}
+    )
 
 
 def _version(package: str) -> str | None:
@@ -705,6 +766,7 @@ def run(
     retargeter_config_path: str | None = None,
     landmark_source: LandmarkSource = "mediapipe",
     stop_event: threading.Event | None = None,
+    on_ready: Callable[[], None] | None = None,
 ) -> None:
     """Start the full teleop pipeline:
     - gRPC-ingress -> retargeter -> robot consumer
@@ -732,6 +794,8 @@ def run(
             frames are already in the canonical 21-point layout; legacy
             ``metaquest`` HTS/Unity replays still need their historical mirror.
         stop_event: Set it to end the session (e.g. when a local publisher dies).
+        on_ready: Called once the hand is connected and the retargeter runs (e.g. so a
+            local publisher starts its recording only then).
     """
     if sink is None:
         sink = OrcaHandSink(model_path)
@@ -783,6 +847,8 @@ def run(
             name="retargeter",
         )
         retargeter_thread.start()
+        if on_ready is not None:
+            on_ready()
 
         signals.starting = False  # from here a signal only sets stop_event
         sink.run_loop(queues.actions_q, stop_event)
@@ -986,81 +1052,77 @@ def run_local(
         publisher_process.join(timeout=3.0)
 
 
+def run_with_publisher(target: Any, args: tuple, name: str, **run_kwargs: Any) -> None:
+    """Start a local publisher process (``target(*args, hand_ready)``), then ``run()``; stop
+    when it dies. ``hand_ready`` is an Event that ``run()`` sets once the hand is ready.
+
+    The publisher runs in a child process so its device (camera, socket) stays out of
+    the robot side's threads. If it exits, the session ends; when the session ends
+    first, the publisher is ended.
+    """
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    hand_ready = ctx.Event()
+    publisher_process = ctx.Process(target=target, args=(*args, hand_ready), name=name, daemon=True)
+    publisher_process.start()
+    logger.info("Local %s started (pid=%d)", name, publisher_process.pid)
+
+    stop_event = threading.Event()
+    _stop_when_dead(publisher_process, stop_event, name)
+    try:
+        run(stop_event=stop_event, on_ready=hand_ready.set, **run_kwargs)
+    finally:
+        stop_event.set()
+        # The hand is already off: give the publisher time to close its recording and log
+        # what it saved, and end it only if it hangs.
+        publisher_process.join(timeout=3.0)
+        if publisher_process.is_alive():
+            publisher_process.terminate()
+            publisher_process.join(timeout=3.0)
+
+
 def _manus_publisher(
     port: int,
     handedness: str,
     zmq_address: str,
+    log_level: int = logging.INFO,
+    record_dir: str | None = None,
+    hand_ready: Any | None = None,
 ) -> None:
-    """Entry point for the Manus publisher subprocess."""
+    """Entry point for the MANUS publisher subprocess. A spawned process starts without
+    logging, so it sets it up as teleop's own: the bridge's warnings, and their clearing,
+    show in teleop's log."""
     from orca_teleop.ingress.manus.publisher import ManusPublisher
 
-    server_address = f"localhost:{port}"
-    deadline = time.monotonic() + 10.0
-
-    while True:
-        try:
-            with socket.create_connection(tuple(server_address.split(":")), timeout=0.5):
-                break
-        except OSError as err:
-            if time.monotonic() >= deadline:
-                raise RuntimeError(
-                    f"Ingress server on {server_address} did not become ready"
-                ) from err
-            time.sleep(0.1)
-
-    publisher = ManusPublisher(
-        server_address=server_address,
-        handedness=handedness,
-        zmq_address=zmq_address,
+    logging.basicConfig(
+        level=log_level, format="%(asctime)s %(name)s | %(message)s", datefmt="%H:%M:%S"
     )
-    publisher.run()
+    ManusPublisher(f"localhost:{port}", handedness, zmq_address, record_dir, hand_ready).run()
 
 
 def run_manus_local(
-    model_path: str | None = None,
-    urdf_path: str | None = None,
-    port: int = DEFAULT_PORT,
+    *,
     handedness: str = DEFAULT_HAND,
-    zmq_address: str = "tcp://127.0.0.1:2044",
-    sink: RobotSink | None = None,
-    visualize_landmarks: bool = False,
+    zmq_address: str = DEFAULT_MANUS_ADDRESS,
+    port: int = DEFAULT_PORT,
+    record_dir: str | None = None,
+    **run_kwargs: Any,
 ) -> None:
-    """Run ``run()`` plus a local Manus ZMQ→gRPC publisher for one-command teleop."""
-    import multiprocessing
+    """Run ``run()`` plus a local MANUS publisher, which listens to a glove bridge
+    (and records the glove's hands into ``record_dir``, if given).
 
-    print(
-        "\033[93mPrerequisite: run 'manus-client run' in a separate terminal before "
-        "starting the Manus teleop pipeline. The Manus SDK client must be streaming "
-        "glove data over ZMQ for this pipeline to receive frames.\033[0m"
+    The bridge (``ingress/manus/bridge.py``, on the computer with the gloves) must be
+    sending on ``zmq_address``; the publisher's log says so while nothing arrives.
+    """
+    logger.info("MANUS publisher: glove bridge %s, %s hand", zmq_address, handedness)
+    run_with_publisher(
+        _manus_publisher,
+        (port, handedness, zmq_address, logging.getLogger().getEffectiveLevel(), record_dir),
+        "manus-publisher",
+        port=port,
+        **run_kwargs,
     )
-
-    publisher_process = multiprocessing.Process(
-        target=_manus_publisher,
-        args=(port, handedness, zmq_address),
-        name="manus-publisher",
-        daemon=True,
-    )
-
-    publisher_process.start()
-    logger.info(
-        "Local Manus publisher started (pid=%d, hand=%s, zmq=%s)",
-        publisher_process.pid,
-        handedness,
-        zmq_address,
-    )
-
-    try:
-        run(
-            model_path=model_path,
-            urdf_path=urdf_path,
-            port=port,
-            sink=sink,
-            visualize_landmarks=visualize_landmarks,
-        )
-    finally:
-        if publisher_process.is_alive():
-            publisher_process.terminate()
-        publisher_process.join(timeout=3.0)
 
 
 def run_metaquest_local(
@@ -1130,81 +1192,9 @@ def run_metaquest_local(
         publisher_process.join(timeout=3.0)
 
 
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description="Orca Hand teleoperation pipeline. "
-        "Launches a publisher and the full retargeting pipeline.",
+if __name__ == "__main__":  # the old developer entry point, retired for the CLI
+    raise SystemExit(
+        "python -m orca_teleop.pipeline is no longer supported. Use orca-teleop-hand (add "
+        "--home for the old start pose) or orca-teleop-urdf; for MANUS gloves add --source "
+        "manus. See the README."
     )
-    parser.add_argument("--model_path", default=None, help="OrcaHand model directory")
-    parser.add_argument("--urdf_path", default=None, help="Hand URDF file")
-    parser.add_argument(
-        "--port", type=int, default=DEFAULT_PORT, help=f"gRPC port (default: {DEFAULT_PORT})"
-    )
-    parser.add_argument(
-        "--hand", default="right", choices=["left", "right"], help="Hand to track (default: right)"
-    )
-    parser.add_argument(
-        "--source",
-        default="mediapipe",
-        choices=["mediapipe", "manus"],
-        help="Input source (default: mediapipe)",
-    )
-    parser.add_argument(
-        "--zmq-address",
-        default="tcp://127.0.0.1:2044",
-        help="ZMQ address for Manus C++ client (default: tcp://127.0.0.1:2044)",
-    )
-    parser.add_argument(
-        "--confidence", type=float, default=0.7, help="MediaPipe confidence (default: 0.7)"
-    )
-    parser.add_argument("--show-video", action="store_true", help="Show webcam feed with landmarks")
-    parser.add_argument(
-        "--visualize-landmarks",
-        action="store_true",
-        help="Open a live 3D matplotlib window showing hand keypoints",
-    )
-    parser.add_argument(
-        "--retargeter",
-        default="adaptive_analytical",
-        choices=["rmsprop", "adaptive_analytical"],
-        help="Retargeter backend (default: adaptive_analytical)",
-    )
-    parser.add_argument(
-        "--retarget-config",
-        default=None,
-        help="YAML config for --retargeter adaptive_analytical",
-    )
-    parser.add_argument(
-        "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"]
-    )
-    args = parser.parse_args()
-
-    logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format="%(asctime)s %(name)s | %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
-    if args.source == "manus":
-        run_manus_local(
-            args.model_path,
-            args.urdf_path,
-            port=args.port,
-            handedness=args.hand,
-            zmq_address=args.zmq_address,
-            visualize_landmarks=args.visualize_landmarks,
-        )
-    else:
-        run_local(
-            args.model_path,
-            args.urdf_path,
-            port=args.port,
-            handedness=args.hand,
-            confidence=args.confidence,
-            show_video=args.show_video,
-            visualize_landmarks=args.visualize_landmarks,
-            retargeter_backend=args.retargeter,
-            retargeter_config_path=args.retarget_config,
-        )

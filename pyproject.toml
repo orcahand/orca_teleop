@@ -16,7 +16,7 @@ dependencies = [
     "pytorch-kinematics",
     "grpcio>=1.62.3",
     "protobuf>=4.25.9,<5",
-    "orca-core>=0.13.0,<0.14.0",
+    "orca-core>=0.14.0,<0.15",
 ]
 
 [project.optional-dependencies]
@@ -30,9 +30,13 @@ mediapipe = [
 urdf-viz = [
     "meshcat",
 ]
+# The browser view of the hand model (--viewer).
+viewer = [
+    "viser==1.1.1",
+]
 # Everything the webcam-to-hand pipeline needs, so one sync covers a fresh clone.
 teleop = [
-    "orca_teleop[adaptive,mediapipe,urdf-viz]",
+    "orca_teleop[adaptive,mediapipe,urdf-viz,viewer]",
 ]
 adaptive = [
     "cmeel-tinyxml2<11",
@@ -47,9 +51,10 @@ avp = [
 metaquest = [
     "aiohttp>=3.10",
 ]
+# The teleop side of MANUS gloves: it listens to the glove bridge (ZMQ). The bridge
+# runs on the glove computer with the MANUS SDK and its own few packages (README).
 manus = [
     "pyzmq>=25.0",
-    "manus-client @ https://github.com/orcahand/manus-client/releases/download/v0.1.0/manus_client-0.1.0-py3-none-manylinux_2_35_x86_64.whl",
 ]
 sim = [
     "orca_sim @ git+https://github.com/orcahand/orca_sim.git@main"
