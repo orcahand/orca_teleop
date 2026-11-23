@@ -1162,3 +1162,42 @@ def test_a_disk_error_stops_only_the_recording_and_says_why():
     publisher._record(np.zeros((21, 3)))
     assert publisher._recorder is None and recorder.closed
     assert [e.errno for e in Seen.errors] == [28]
+
+
+def test_the_recording_waits_for_the_hand_so_a_failed_start_leaves_no_folder(tmp_path):
+    from orca_teleop.ingress.landmark_recording import load_recording
+
+    landmarks_q: queue.Queue = queue.Queue(maxsize=4)
+    stop = threading.Event()
+    server = IngressServer(landmarks_q, stop, port=0)
+    port = server.start()
+    ctx, sock, address = _free_tcp()
+    rec = tmp_path / "rec"
+    hand_ready = threading.Event()
+    publisher = ManusPublisher(f"localhost:{port}", "right", address, str(rec), hand_ready)
+    thread = threading.Thread(target=publisher.run, name="manus-publisher")
+    thread.start()
+    hand = fake_bridge.landmarks_to_wire(fake_bridge.made_up_hand(1.0))
+
+    def send_until_streamed():
+        while not landmarks_q.empty():
+            landmarks_q.get_nowait()
+        deadline = time.monotonic() + 10.0
+        while landmarks_q.empty() and time.monotonic() < deadline:
+            sock.send(wire.encode({"right": hand}, time.time_ns()))
+            time.sleep(0.02)
+        assert not landmarks_q.empty()
+
+    try:
+        send_until_streamed()  # hands stream to teleop, but the hand is not ready yet
+        assert not rec.exists()
+        hand_ready.set()
+        send_until_streamed()
+    finally:
+        publisher.stop()
+        thread.join(timeout=5.0)
+        stop.set()
+        server.stop(grace=0.5)
+        sock.close()
+        ctx.term()
+    assert len(load_recording(rec).world) >= 1

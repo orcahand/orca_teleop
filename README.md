@@ -203,7 +203,8 @@ to drive the hand. Add `--model_path` for a model other than `orcahand-right`, a
 `--source manus` picks the glove; without it, teleop uses the webcam, as before.
 Teleop reads the bridge at `127.0.0.1:2044` (this computer) by default;
 `--glove-address HOST:PORT` reads it elsewhere (see below). `--record DIR` saves the
-glove's hand landmarks, in the same format as a webcam recording but without video.
+glove's hand landmarks, in the same format as a webcam recording but without video. The
+recording starts when the hand is ready, so a start that fails leaves no folder.
 
 ### One computer or two
 

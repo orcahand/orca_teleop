@@ -48,7 +48,11 @@ class ManusPublisher:
         handedness: str = "right",
         zmq_address: str = DEFAULT_MANUS_ADDRESS,
         record_dir: str | None = None,
+        hand_ready: threading.Event | None = None,
     ) -> None:
+        """``hand_ready``: set by the robot side once the hand is ready; the recording waits
+        for it, so a start that fails leaves no folder (``None``: record from the first hand).
+        """
         if handedness.lower() not in wire.SIDES:
             raise ValueError(f"handedness must be one of {wire.SIDES}, got {handedness!r}")
         self._server_address = server_address
@@ -61,6 +65,8 @@ class ManusPublisher:
         self._stop = threading.Event()
         self._warnings: dict[str, str] = {}
         self._record_dir = record_dir
+        self._hand_ready = hand_ready
+        self._recording_pending = record_dir is not None
         self._recorder = None  # a LandmarkRecorder while recording
 
     def stop(self) -> None:
@@ -126,6 +132,8 @@ class ManusPublisher:
                         other_sides.update(sides)
                     else:
                         used += 1
+                        if self._recording_pending:
+                            self._start_recording_when_ready()
                         if self._recorder is not None:
                             self._record(keypoints)
                         with self._lock:  # set inside: else a frame can go out twice
@@ -158,6 +166,21 @@ class ManusPublisher:
             sub.close(linger=0)
             ctx.term()
 
+    def _start_recording_when_ready(self) -> None:
+        if self._hand_ready is not None and not self._hand_ready.is_set():
+            return
+        from orca_teleop.ingress.landmark_recording import LandmarkRecorder
+
+        self._recording_pending = False
+        meta = {"input": "glove", "glove": "manus", "handedness": self._handedness, "video": False}
+        try:
+            self._recorder = LandmarkRecorder(self._record_dir, meta, 0.0)
+        except OSError as err:  # a disk problem must not stop the hand
+            logger.error("Recording did not start, teleop goes on: %s", err)
+            self._recording_stopped(err)
+            return
+        logger.info("Recording to %s", self._record_dir)
+
     def _record(self, keypoints: np.ndarray) -> None:
         try:
             frame = self._recorder.add_time(time.time_ns())
@@ -172,8 +195,8 @@ class ManusPublisher:
             self._recording_stopped(err)
 
     def _recording_stopped(self, err: OSError) -> None:
-        """Called once when a disk error ends the recording (teleop goes on); a subclass
-        may show ``err``."""
+        """Called once when a disk error stops or prevents the recording (teleop goes on);
+        a subclass may show ``err``."""
 
     def _frame_generator(self):
         """Yield a HandFrame for each new glove frame."""
@@ -215,17 +238,6 @@ class ManusPublisher:
                         f"{CONNECT_TIMEOUT_S:.0f}s. Start it before the publisher."
                     ) from err
                 time.sleep(0.1)
-        if self._record_dir is not None:  # after the probe: no folder if teleop never came up
-            from orca_teleop.ingress.landmark_recording import LandmarkRecorder
-
-            meta = {
-                "input": "glove",
-                "glove": "manus",
-                "handedness": self._handedness,
-                "video": False,
-            }
-            self._recorder = LandmarkRecorder(self._record_dir, meta, 0.0)
-            logger.info("Recording to %s", self._record_dir)
         channel = grpc.insecure_channel(self._server_address)
         zmq_thread = threading.Thread(target=self._zmq_receiver, name="zmq-receiver", daemon=True)
         zmq_thread.start()
@@ -250,6 +262,8 @@ class ManusPublisher:
             if self._recorder is not None:
                 _, hands = self._recorder.close()
                 logger.info("Recorded %d hands to %s", hands, self._record_dir)
+            elif self._recording_pending:
+                logger.info("Nothing recorded: the hand was not ready, or no hand came")
             logger.info("ManusPublisher shut down.")
 
 

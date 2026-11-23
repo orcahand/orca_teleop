@@ -40,6 +40,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -765,6 +766,7 @@ def run(
     retargeter_config_path: str | None = None,
     landmark_source: LandmarkSource = "mediapipe",
     stop_event: threading.Event | None = None,
+    on_ready: Callable[[], None] | None = None,
 ) -> None:
     """Start the full teleop pipeline:
     - gRPC-ingress -> retargeter -> robot consumer
@@ -792,6 +794,8 @@ def run(
             frames are already in the canonical 21-point layout; legacy
             ``metaquest`` HTS/Unity replays still need their historical mirror.
         stop_event: Set it to end the session (e.g. when a local publisher dies).
+        on_ready: Called once the hand is connected and the retargeter runs (e.g. so a
+            local publisher starts its recording only then).
     """
     if sink is None:
         sink = OrcaHandSink(model_path)
@@ -843,6 +847,8 @@ def run(
             name="retargeter",
         )
         retargeter_thread.start()
+        if on_ready is not None:
+            on_ready()
 
         signals.starting = False  # from here a signal only sets stop_event
         sink.run_loop(queues.actions_q, stop_event)
@@ -1047,7 +1053,8 @@ def run_local(
 
 
 def run_with_publisher(target: Any, args: tuple, name: str, **run_kwargs: Any) -> None:
-    """Start a local publisher process (``target(*args)``), then ``run()``; stop when it dies.
+    """Start a local publisher process (``target(*args, hand_ready)``), then ``run()``; stop
+    when it dies. ``hand_ready`` is an Event that ``run()`` sets once the hand is ready.
 
     The publisher runs in a child process so its device (camera, socket) stays out of
     the robot side's threads. If it exits, the session ends; when the session ends
@@ -1055,16 +1062,16 @@ def run_with_publisher(target: Any, args: tuple, name: str, **run_kwargs: Any) -
     """
     import multiprocessing
 
-    publisher_process = multiprocessing.get_context("spawn").Process(
-        target=target, args=args, name=name, daemon=True
-    )
+    ctx = multiprocessing.get_context("spawn")
+    hand_ready = ctx.Event()
+    publisher_process = ctx.Process(target=target, args=(*args, hand_ready), name=name, daemon=True)
     publisher_process.start()
     logger.info("Local %s started (pid=%d)", name, publisher_process.pid)
 
     stop_event = threading.Event()
     _stop_when_dead(publisher_process, stop_event, name)
     try:
-        run(stop_event=stop_event, **run_kwargs)
+        run(stop_event=stop_event, on_ready=hand_ready.set, **run_kwargs)
     finally:
         stop_event.set()
         if publisher_process.is_alive():
@@ -1078,6 +1085,7 @@ def _manus_publisher(
     zmq_address: str,
     log_level: int = logging.INFO,
     record_dir: str | None = None,
+    hand_ready: Any | None = None,
 ) -> None:
     """Entry point for the MANUS publisher subprocess. A spawned process starts without
     logging, so it sets it up as teleop's own: the bridge's warnings, and their clearing,
@@ -1087,7 +1095,7 @@ def _manus_publisher(
     logging.basicConfig(
         level=log_level, format="%(asctime)s %(name)s | %(message)s", datefmt="%H:%M:%S"
     )
-    ManusPublisher(f"localhost:{port}", handedness, zmq_address, record_dir).run()
+    ManusPublisher(f"localhost:{port}", handedness, zmq_address, record_dir, hand_ready).run()
 
 
 def run_manus_local(

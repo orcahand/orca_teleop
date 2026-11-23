@@ -300,6 +300,27 @@ class _NeverConnectSink:
         pass
 
 
+def test_on_ready_comes_after_the_hand_connects_and_never_on_a_failed_start(monkeypatch):
+    monkeypatch.setattr("orca_teleop.pipeline.Retargeter", _NoopRetargeter)
+    events: list[str] = []
+
+    class _Sink(_NeverConnectSink):
+        def connect(self):
+            events.append("connect")
+
+    run(None, sink=_Sink(), port=0, on_ready=lambda: events.append("ready"))
+    assert events == ["connect", "ready"]
+
+    class _FailingSink(_NeverConnectSink):
+        def connect(self):
+            raise RuntimeError("no hand")
+
+    events.clear()
+    with pytest.raises(RuntimeError, match="no hand"):
+        run(None, sink=_FailingSink(), port=0, on_ready=lambda: events.append("ready"))
+    assert events == []
+
+
 def test_a_broken_retargeter_fails_before_the_hand_connects(monkeypatch):
     monkeypatch.setattr("orca_teleop.pipeline.Retargeter", _BrokenRetargeter)
     sink = _NeverConnectSink()
