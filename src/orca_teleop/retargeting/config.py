@@ -6,9 +6,10 @@ its algorithm (``type: NAME``), so a file never runs under another one: given al
 file picks its algorithm; given with a ``--retargeter`` it disagrees with, it stops
 with an error.
 
-A file can start from another one (``base: OTHER.yaml``, a path relative to the file,
-else a packaged config's name) and set only what differs: mappings merge key by key, any
-other value replaces. Files from before 19 Nov 2026 name their retargeter in
+A file can start from another one and set only what differs: mappings merge key by key,
+any other value replaces. ``base: OTHER.yaml`` is a path relative to the file (or an
+absolute one); ``base: package:NAME.yaml`` is a config packaged with orca_teleop, so a
+copy of a packaged file works in any folder. Files from before 19 Nov 2026 name their retargeter in
 ``optimizer: {type: NAME}``; that still counts.
 """
 
@@ -21,6 +22,7 @@ from typing import Any
 import yaml
 
 DEFAULT_RETARGETER = "adaptive_analytical"
+PACKAGED = "package:"  # base: package:NAME.yaml, a config packaged with orca_teleop
 # Each retargeter's config file per input source (the publisher it reads from);
 # "default" serves every source without a file of its own.
 DEFAULT_CONFIGS: dict[str, dict[str, str]] = {
@@ -64,15 +66,23 @@ def _load(path: Path, seen: tuple[Path, ...]) -> dict[str, Any]:
     base = cfg.pop("base", None)
     if base is None:
         return cfg
-    if not isinstance(base, str) or not base.strip() or (path.parent / base).is_dir():
-        raise ValueError(f"{path}: `base:` must be a file name, got {base!r}")
-    # Next to the file, else a packaged config by its bare name (so a copy elsewhere, or
-    # a file named like the packaged one it starts from, still finds its base).
-    base_path = path.parent / base
-    bare = Path(base).name == base
-    if bare and (not base_path.exists() or base_path.resolve() == path.resolve()):
-        if _packaged(base).exists():
-            base_path = _packaged(base)
+    if not isinstance(base, str) or not base.strip():
+        raise ValueError(f"{path}: `base:` must be a file path or {PACKAGED}NAME, got {base!r}")
+    if base.startswith(PACKAGED):
+        name = base[len(PACKAGED) :]
+        base_path = _packaged(name)
+        if Path(name).name != name or not base_path.is_file():
+            packaged = sorted(p.name for p in _packaged("").iterdir() if p.suffix == ".yaml")
+            raise ValueError(
+                f"{path}: `base: {base}`: no such packaged config; there are {packaged}"
+            )
+    else:
+        base_path = path.parent / base
+        if not base_path.is_file():
+            hint = ""
+            if Path(base).name == base and _packaged(base).is_file():
+                hint = f"; for the packaged one, write `base: {PACKAGED}{base}`"
+            raise ValueError(f"{path}: `base: {base}`: no such file next to it{hint}")
     return _merge(_load(base_path, (*seen, path.resolve())), cfg)
 
 

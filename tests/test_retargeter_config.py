@@ -144,7 +144,7 @@ def test_a_bad_type_or_base_value_is_a_clear_error(tmp_path):
     with pytest.raises(ValueError, match="must name its retargeter"):
         resolve(None, str(cfg))
     cfg = _write(tmp_path / "b.yaml", "type: adaptive_analytical\nbase: 5\n")
-    with pytest.raises(ValueError, match="must be a file name"):
+    with pytest.raises(ValueError, match="must be a file path"):
         load_config(cfg)
 
 
@@ -177,20 +177,20 @@ def test_run_manus_local_uses_the_glove_config_by_default(monkeypatch):
     assert seen["retargeter_config_path"] == "x.yaml"
 
 
-def test_a_file_named_like_its_packaged_base_starts_from_the_packaged_one(tmp_path):
-    over = _write(tmp_path / "manus.yaml", "base: manus.yaml\nretarget:\n  maxeval: 7\n")
+def test_package_names_a_packaged_base_from_any_folder(tmp_path):
+    over = _write(tmp_path / "manus.yaml", "base: package:manus.yaml\nretarget:\n  maxeval: 7\n")
     cfg = load_config(over)
     assert cfg["retarget"]["maxeval"] == 7 and cfg["retarget"]["palm_offset_cm"] == 0.0
 
 
-def test_a_base_with_a_folder_is_never_swapped_for_a_packaged_file(tmp_path):
-    (tmp_path / "hand").mkdir()
-    over = _write(tmp_path / "hand" / "s.yaml", "base: ../configs/manus.yaml\n")
-    with pytest.raises(FileNotFoundError):
+def test_a_base_is_never_swapped_for_another_file(tmp_path):
+    """A path is the file at that path, and package: a packaged file: no fallback."""
+    over = _write(tmp_path / "s.yaml", "base: manus.yaml\n")  # not next to it: no fallback
+    with pytest.raises(ValueError, match="write `base: package:manus.yaml`"):
         load_config(over)
-    for bad in ("''", "."):
+    for bad in ("''", ".", "../configs/manus.yaml", "package:nope.yaml", "package:../x.yaml"):
         cfg = _write(tmp_path / "e.yaml", f"type: adaptive_analytical\nbase: {bad}\n")
-        with pytest.raises(ValueError, match="must be a file name"):
+        with pytest.raises(ValueError, match="base"):
             load_config(cfg)
 
 

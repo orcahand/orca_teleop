@@ -338,7 +338,9 @@ Each input has its own config in `src/orca_teleop/retargeting/configs/`: the web
 (and any input without a file of its own) uses `adaptive_analytical_orca_tuned.yaml`, the
 MANUS gloves `manus.yaml`. Pass `--retargeter-config path/to/config.yaml` to try another one.
 A config names its retargeter (`type: adaptive_analytical`) and can start from another file
-(`base: other.yaml`) and set only what differs. `--retargeter rmsprop` selects the legacy
+and set only what differs: `base: other.yaml` is a path relative to the config, and
+`base: package:manus.yaml` is a config that comes with orca_teleop (so a copy of `manus.yaml`
+works in any folder). `--retargeter rmsprop` selects the legacy
 fingertip key-vector retargeter for comparison; a `--retargeter` that disagrees with the
 config's `type` stops with an error.
 

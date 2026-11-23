@@ -1,7 +1,7 @@
 # MANUS gloves (--source manus): the webcam's config with the changes below. Each change has to
 # beat the one before it, first on replayed glove clips, then on the hand.
 type: adaptive_analytical
-base: adaptive_analytical_orca_tuned.yaml
+base: package:adaptive_analytical_orca_tuned.yaml
 retarget:
   # The robot palm point at the midpoint of the thumb and pinky bases, with no offset: on the
   # hand (19 Nov 2026, fresh glove calibration) 0 cm was at least as good as the webcam's 1.5 cm,
