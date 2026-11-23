@@ -55,6 +55,16 @@ If you used an earlier version of this repo, these changes affect you:
   `orca-teleop-hand --source manus`. `--zmq-address` is now `--glove-address`, also in
   `python -m orca_teleop.ingress.manus.publisher`, `scripts/manus_test.py` and
   `scripts/record_dataset.py`.
+- **Retargeter config:**
+  - `--retarget-config` is now `--retargeter-config`, also in the scripts.
+  - Each input picks its own config: `--source manus`, `run_manus_local()` and
+    `scripts/replay_manus_dataset_sim.py` now use `manus.yaml`.
+  - A config file must name its retargeter with `type:` (the older
+    `optimizer: {type: NAME}` still works); a file with neither stops with an error.
+    Without `--retargeter`, the file's `type:` picks the retargeter; a `--retargeter`
+    that disagrees with it stops with an error.
+  - The solver may now take up to 150 evaluations per frame (it was 50), also for the
+    webcam: hard frames converge, at some extra time per frame.
 - **Python API:**
   - `run_manus_local()` takes keyword arguments only.
   - `ingress.manus.conversion`: `manus_zmq_to_mano_keypoints`,
@@ -63,6 +73,9 @@ If you used an earlier version of this repo, these changes affect you:
     order.
   - `ingress.manus.publisher.DEFAULT_ZMQ_ADDRESS` is removed (use
     `orca_teleop.constants.DEFAULT_MANUS_ADDRESS`).
+  - `retargeting.constants.MANO_TO_URDF_TRANSLATION` is removed, and
+    `adaptive_analytical.MANO_OFFSET_CM` is now `DEFAULT_PALM_OFFSET_CM` (the config key
+    `retarget.palm_offset_cm` overrides it).
 
 ## Run
 
@@ -330,9 +343,13 @@ mappings from YAML, Pinocchio forward kinematics/Jacobians, and `nlopt` for boun
 per-frame optimization.
 
 Each frame it matches the fingertips and the direction of every finger segment to
-yours, closes a pinch when your thumb and a fingertip come within about 1.5 cm, and
+yours, pulls the thumb and a fingertip together as yours come near each other, and
 smooths the result with a One Euro filter (steady when you hold still, quick when you
-move).
+move). With the webcam, a pinch closes when your fingertips are about 1.5 cm apart (the
+camera's tip points sit inside the fingers); a glove's tip points sit on the skin, so
+`manus.yaml` closes it at 0 cm. Your hand's size is measured once per session: with the
+webcam, hold your hand open and flat for the first second; a glove's size comes from its
+skeleton at the first frame, in any pose.
 
 Each input has its own config in `src/orca_teleop/retargeting/configs/`: the webcam
 (and any input without a file of its own) uses `adaptive_analytical_orca_tuned.yaml`, the
