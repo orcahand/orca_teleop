@@ -809,7 +809,7 @@ class AdaptiveAnalyticalRetargeter:
         )
 
         opt = self._nlopt.opt(self._nlopt.LD_SLSQP, len(self._finger_joint_ids))
-        # 150: at 50 a fifth of the solves stopped unconverged (see the default config).
+        # 150: with too few, some solves stop before they converge (see the default config).
         opt.set_maxeval(int(self._retarget_cfg.get("maxeval", 150)))
         opt.set_ftol_abs(float(self._retarget_cfg.get("ftol_abs", 1e-4)))
         opt.set_lower_bounds(self._lower_phys.tolist())

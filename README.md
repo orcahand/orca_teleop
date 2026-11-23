@@ -345,11 +345,12 @@ per-frame optimization.
 Each frame it matches the fingertips and the direction of every finger segment to
 yours, pulls the thumb and a fingertip together as yours come near each other, and
 smooths the result with a One Euro filter (steady when you hold still, quick when you
-move). With the webcam, a pinch closes when your fingertips are about 1.5 cm apart (the
-camera's tip points sit inside the fingers); a glove's tip points sit on the skin, so
-`manus.yaml` closes it at 0 cm. Your hand's size is measured once per session: with the
-webcam, hold your hand open and flat for the first second; a glove's size comes from its
-skeleton at the first frame, in any pose.
+move). A pinch closes when your fingertips touch. With the webcam, the tip points are
+then still about 1.5 cm apart, because they sit inside the fingers; a glove's tip points
+sit on the skin, so `manus.yaml` closes the pinch at a 0 cm gap. Your hand's size is
+measured once per session: with the webcam, hold your hand open and flat for the first
+second it is in view; a glove's size comes from its skeleton at the first frame, in any
+pose.
 
 Each input has its own config in `src/orca_teleop/retargeting/configs/`: the webcam
 (and any input without a file of its own) uses `adaptive_analytical_orca_tuned.yaml`, the
