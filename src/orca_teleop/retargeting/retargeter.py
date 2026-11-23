@@ -12,11 +12,8 @@ from orca_core import OrcaHand, OrcaJointPositions
 
 from orca_teleop.constants import WRIST_MOTOR_IDX
 from orca_teleop.retargeting import utils as retargeter_utils
-from orca_teleop.retargeting.constants import (
-    CALIBRATION_FRAMES,
-    DEFAULT_LOSS_COEFFS,
-    MANO_TO_URDF_TRANSLATION,
-)
+from orca_teleop.retargeting.config import config_type, default_config_path, load_config
+from orca_teleop.retargeting.constants import CALIBRATION_FRAMES, DEFAULT_LOSS_COEFFS
 from orca_teleop.utils import default_urdf_path, infer_model_version
 
 logger = logging.getLogger(__name__)
@@ -325,6 +322,13 @@ class Retargeter:
         config_path: str | None = None,
         **kwargs,
     ) -> "Retargeter":
+        """The ``backend`` retargeter, set up by ``config_path`` (default: the backend's
+        packaged file), whose ``type:`` must be ``backend``."""
+        if config_path is None:
+            config_path = default_config_path(backend)
+        kind = config_type(config_path)
+        if kind != backend:
+            raise ValueError(f"{config_path} is a `type: {kind}` config, not {backend}")
         if backend == "adaptive_analytical":
             if kwargs:
                 raise ValueError(
@@ -340,13 +344,12 @@ class Retargeter:
                 urdf_path=urdf_path,
                 config_path=config_path,
             )
-        if backend != "rmsprop":
+        extra = sorted(set(load_config(config_path)) - {"type"})
+        if extra:
             raise ValueError(
-                f"Unknown retargeter backend {backend!r}; expected 'rmsprop' or "
-                "'adaptive_analytical'."
+                f"{config_path}: rmsprop reads only `type:` from its file, not {extra}; "
+                "its options are keyword arguments"
             )
-        if config_path is not None:
-            raise ValueError("config_path is only supported by backend='adaptive_analytical'")
         return cls(RetargeterConfig.from_paths(model_path, urdf_path, **kwargs))
 
     def _ik_loss(self, target_key_vectors: torch.Tensor) -> torch.Tensor:
@@ -441,11 +444,7 @@ class Retargeter:
 
         # Step 4: scale → rotate into URDF base frame → key vectors
         scaled = normalized * self._mano_scale
-        in_urdf_frame = (
-            scaled @ cfg.urdfhand_rot_matrix.T
-            + cfg.urdfhand_center
-            + np.array(MANO_TO_URDF_TRANSLATION)
-        )
+        in_urdf_frame = scaled @ cfg.urdfhand_rot_matrix.T + cfg.urdfhand_center
         joint_t = torch.tensor(in_urdf_frame, dtype=torch.float32, device=cfg.device)
         mano_ft, mano_palm = retargeter_utils.extract_mano_fingertips_and_palm(
             joint_t, list(FINGERS), source

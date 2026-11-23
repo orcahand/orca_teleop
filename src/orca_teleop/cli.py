@@ -1,9 +1,10 @@
 """Console entry points for the teleoperation pipeline.
 
 Every path these take resolves by default: the model from orca_core, the URDF
-from the orcahand_description checkout, and the retarget config from this
-package. A bare ``orca-teleop-hand`` is therefore enough to drive a connected
-hand, and ``orca-teleop-urdf`` the same pipeline into a kinematic viewer.
+from the orcahand_description checkout, and the retargeter's config for the input
+from this package (``retargeting/config.py``). A bare ``orca-teleop-hand`` is
+therefore enough to drive a connected hand, and ``orca-teleop-urdf`` the same
+pipeline into a kinematic viewer.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from pathlib import Path
 from orca_teleop.constants import DEFAULT_MANUS_ADDRESS
 from orca_teleop.ingress.server import DEFAULT_PORT
 from orca_teleop.pipeline import OrcaHandSink, run, run_local, run_manus_local
+from orca_teleop.retargeting.config import DEFAULT_CONFIGS, DEFAULT_RETARGETER, resolve
 
 logger = logging.getLogger("orca_teleop")
 
@@ -55,7 +57,8 @@ def _common_parser(description: str) -> argparse.ArgumentParser:
         "--source",
         default="mediapipe",
         choices=sorted(SOURCES),
-        help="Local publisher: mediapipe (the webcam) or manus (MANUS gloves, via their bridge)",
+        help="The input: mediapipe (the webcam) or manus (MANUS gloves, via their bridge). "
+        "It picks the retargeter config; with --no-local it names what the other program sends",
     )
     parser.add_argument(
         "--glove-address",
@@ -79,12 +82,18 @@ def _common_parser(description: str) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--retargeter",
-        default="adaptive_analytical",
-        choices=["rmsprop", "adaptive_analytical"],
-        help="Retargeter backend (default: adaptive_analytical)",
+        default=None,
+        choices=sorted(DEFAULT_CONFIGS),
+        help=(
+            "Retargeter, with its config for the input "
+            f"(default: the config file's type, else {DEFAULT_RETARGETER})"
+        ),
     )
     parser.add_argument(
-        "--retarget-config", default=None, help="YAML config for adaptive_analytical"
+        "--retargeter-config",
+        default=None,
+        metavar="FILE",
+        help="Retargeter config instead of the input's default; its `type:` names the retargeter",
     )
     parser.add_argument(
         "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"]
@@ -120,6 +129,17 @@ def _run_manus(args, handedness: str, common: dict) -> None:
 SOURCES = {"mediapipe": _run_mediapipe, "manus": _run_manus}
 
 
+def _resolve_retargeter(parser: argparse.ArgumentParser, args, source: str) -> None:
+    """Settle --retargeter and --retargeter-config for ``source`` before anything starts."""
+    try:
+        args.retargeter, args.retargeter_config = resolve(
+            args.retargeter, args.retargeter_config, source
+        )
+    except (OSError, ValueError) as err:
+        parser.error(str(err))
+    logger.info("Retargeter %s, config %s", args.retargeter, args.retargeter_config)
+
+
 def _launch(args, sink, handedness: str) -> None:
     common = dict(
         model_path=args.model_path,
@@ -127,17 +147,14 @@ def _launch(args, sink, handedness: str) -> None:
         port=args.port,
         sink=sink,
         retargeter_backend=args.retargeter,
-        retargeter_config_path=args.retarget_config,
+        retargeter_config_path=str(args.retargeter_config),
     )
     if args.record and not args.local:
         raise SystemExit("--record records the local publisher; drop --no-local")
     if args.glove_address and args.source != "manus":
         raise SystemExit("--glove-address is for --source manus")
-    if not args.local and args.source != "mediapipe":
-        raise SystemExit(
-            f"--no-local waits for a remote publisher, so --source {args.source} would do "
-            "nothing: drop one of them"
-        )
+    if args.glove_address and not args.local:
+        raise SystemExit("--glove-address is for the local glove reader; drop --no-local")
     if args.local:
         SOURCES[args.source](args, handedness, common)
     else:
@@ -200,6 +217,7 @@ def teleop_hand(argv: list[str] | None = None) -> None:
     if args.servo_acceleration is not None and not 0 <= args.servo_acceleration < float("inf"):
         parser.error("--servo-acceleration must be a number, 0 or more")
     _configure_logging(args.log_level)
+    _resolve_retargeter(parser, args, args.source)
     logger.info("orca_core %s", importlib.metadata.version("orca_core"))
 
     sink = OrcaHandSink(
@@ -253,6 +271,7 @@ def teleop_urdf(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     _configure_logging(args.log_level)
+    _resolve_retargeter(parser, args, args.source)
 
     handedness = args.hand or "right"
     sink = OrcaHandUrdfVizSink(

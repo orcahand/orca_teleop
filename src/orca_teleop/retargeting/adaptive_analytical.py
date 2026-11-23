@@ -5,8 +5,6 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from importlib import resources
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -15,16 +13,28 @@ from orca_core import OrcaHand, OrcaJointPositions
 
 from orca_teleop.constants import WRIST_MOTOR_IDX
 from orca_teleop.retargeting import utils as retargeter_utils
-from orca_teleop.retargeting.constants import (
-    CALIBRATION_FRAMES,
-    MANO_TO_URDF_TRANSLATION,
-    TIP_LANDMARK_OFFSET_M,
-)
+from orca_teleop.retargeting.config import default_config_path, load_config
+from orca_teleop.retargeting.constants import CALIBRATION_FRAMES, TIP_LANDMARK_OFFSET_M
 from orca_teleop.retargeting.retargeter import FINGERS, TargetPose
 from orca_teleop.utils import default_urdf_path, infer_model_version
 
 M_TO_CM = 100.0
-MANO_OFFSET_CM = np.array([0.0, 0.0, 1.5], dtype=np.float64)
+# The robot palm point sits this far palmar (base frame -z) of the midpoint of the thumb and
+# pinky bases; retarget.palm_offset_cm overrides it. An estimate, not a measured value.
+DEFAULT_PALM_OFFSET_CM = 1.5
+# The hand-size scale fits the human hand onto a robot hand this much smaller than its model, so
+# every target lands 10 % nearer the palm. An estimate, not a measured value.
+ROBOT_SIZE_FACTOR = 0.9
+# retarget.hand_size: how the human hand's size is measured, once per session.
+#   key_vectors: palm to fingertip over the first CALIBRATION_FRAMES frames (the hand must be
+#     open and flat then); the robot side is its neutral pose.
+#   bone_lengths: per finger, the path from the palm point through the finger's 4 points to its
+#     tip, at the first frame, on both hands (the robot's points are not the same joints: only
+#     the path's two ends match, and its start only with palm_offset_cm 0, as the human palm
+#     point has no offset). The same in every pose for an input with a fixed skeleton (a
+#     glove). It measures the input's skeleton: if the glove does not fit it to the wearer, every
+#     wearer gets the same scale.
+HAND_SIZE_METHODS = ("key_vectors", "bone_lengths")
 logger = logging.getLogger(__name__)
 
 _MP_TIP_INDICES = np.array([4, 8, 12, 16, 20], dtype=np.int64)
@@ -70,21 +80,12 @@ def _optional_imports():
     try:
         import nlopt
         import pinocchio as pin
-        import yaml
     except ImportError as exc:
         raise RuntimeError(
             "backend='adaptive_analytical' requires optional dependencies. Install the "
             "project with its adaptive extra, e.g. `uv sync --extra adaptive`."
         ) from exc
-    return nlopt, pin, yaml
-
-
-def _default_config_path() -> Path:
-    return (
-        resources.files("orca_teleop.retargeting")
-        / "configs"
-        / "adaptive_analytical_orca_tuned.yaml"
-    )
+    return nlopt, pin
 
 
 def _huber_loss(x: np.ndarray, delta: float) -> np.ndarray:
@@ -318,6 +319,13 @@ class _LPFilter:
         self._state = None
 
 
+def _chain_lengths(palm: np.ndarray, chains: np.ndarray) -> np.ndarray:
+    """Per finger: palm point to the finger's first point, plus its bones. ``chains`` is
+    (point, finger, xyz), from the finger's base to its tip."""
+    first = np.linalg.norm(chains[0] - palm, axis=-1)
+    return first + np.linalg.norm(np.diff(chains, axis=0), axis=-1).sum(axis=0)
+
+
 class AdaptiveAnalyticalRetargeter:
     """Wuji-style adaptive retargeter adapted to OrcaHand's kinematics and API."""
 
@@ -328,7 +336,7 @@ class AdaptiveAnalyticalRetargeter:
         urdf_path: str | None,
         config_path: str | None,
     ) -> None:
-        self._nlopt, self._pin, yaml = _optional_imports()
+        self._nlopt, self._pin = _optional_imports()
 
         self._hand = OrcaHand(hand_config_path)
         self.hand_type = self._hand.config.type
@@ -340,9 +348,9 @@ class AdaptiveAnalyticalRetargeter:
             urdf_path = default_urdf_path(self.hand_type, self.model_version)
         self.urdf_path = str(urdf_path)
 
-        cfg_path = Path(config_path) if config_path is not None else _default_config_path()
-        with open(cfg_path) as f:
-            self.config: dict[str, Any] = yaml.safe_load(f)
+        if config_path is None:
+            config_path = default_config_path("adaptive_analytical")
+        self.config: dict[str, Any] = load_config(config_path)
 
         self._retarget_cfg = self.config.get("retarget", {})
         self._frame_map = self._load_frame_map(self.config)
@@ -373,15 +381,18 @@ class AdaptiveAnalyticalRetargeter:
         return cls(hand_config_path=model_path, urdf_path=urdf_path, config_path=config_path)
 
     def reset(self) -> None:
+        """A new input or a new hand size: also forget the last pose and the calibration."""
         self.reset_tracking()
+        self._last_qpos_phys = None
         self._calibration_mags.clear()
         self._calibration_done = False
         self._mano_scale = 1.0
 
     def reset_tracking(self) -> None:
-        """Forget the previous pose (filter state, warm start); keep the hand-size calibration."""
+        """After a tracking loss: reset the filter; keep the hand-size calibration and the last
+        solved pose (warm start and temporal reference), so the first solve after a gap starts
+        where the hand is, not from neutral."""
         self._filter.reset()
-        self._last_qpos_phys = None
 
     def retarget(self, target_pose: TargetPose) -> OrcaJointPositions | None:
         if target_pose.source != "mediapipe":
@@ -398,8 +409,11 @@ class AdaptiveAnalyticalRetargeter:
             normalized = normalized @ self._rotation_matrix.T
 
         if not self._calibration_done:
-            self._ingest_calibration_frame(normalized, target_pose.source)
-            return None
+            if self._hand_size == "bone_lengths":
+                self._scale_from_bone_lengths(normalized, target_pose.source)
+            else:
+                self._ingest_calibration_frame(normalized, target_pose.source)
+                return None
 
         keypoints = self._target_keypoints_in_urdf_frame(normalized)
 
@@ -407,6 +421,7 @@ class AdaptiveAnalyticalRetargeter:
         if not np.all(np.isfinite(qpos_phys)):
             logger.warning("Retargeter produced a non-finite pose; resetting its state")
             self.reset_tracking()
+            self._last_qpos_phys = None  # reset_tracking keeps the pose; a non-finite one must go
             return None
 
         finger_phys_deg = np.rad2deg(qpos_phys)
@@ -583,6 +598,14 @@ class AdaptiveAnalyticalRetargeter:
         self._w_dir = float(cfg.get("w_dir", 10.0))
         self._w_full_hand = float(cfg.get("w_full_hand", 1.0))
         self._scaling = float(cfg.get("scaling", 1.0))
+        self._hand_size = str(cfg.get("hand_size", "key_vectors"))
+        if self._hand_size not in HAND_SIZE_METHODS:
+            raise ValueError(
+                f"retarget.hand_size must be one of {HAND_SIZE_METHODS}, got {self._hand_size!r}"
+            )
+        self._palm_offset_cm = np.array(
+            [0.0, 0.0, float(cfg.get("palm_offset_cm", DEFAULT_PALM_OFFSET_CM))], dtype=np.float64
+        )
         self._thumb_shape_from_base = bool(cfg.get("thumb_shape_from_base", False))
 
         # Per-finger tip-direction weight applied outside the pinch blend, which is
@@ -686,7 +709,24 @@ class AdaptiveAnalyticalRetargeter:
         palm = self._robot_palm_from_positions(neutral_positions)
         self._robot_thumb_base_cm = (neutral_positions[self._thumb_base_index] - palm) * M_TO_CM
         urdf_keyvectors = tip_pos - palm
-        self._urdf_keyvector_mags = 0.9 * np.linalg.norm(urdf_keyvectors, axis=1)
+        self._urdf_keyvector_mags = ROBOT_SIZE_FACTOR * np.linalg.norm(urdf_keyvectors, axis=1)
+        chains = np.stack(
+            [
+                neutral_positions[self._base_indices],
+                neutral_positions[self._pip_indices],
+                neutral_positions[self._dip_indices],
+                tip_pos,
+            ]
+        )  # (point, finger, xyz)
+        self._urdf_finger_lengths = ROBOT_SIZE_FACTOR * _chain_lengths(palm, chains)
+
+    def _scale_from_bone_lengths(self, normalized_joints: np.ndarray, source: str) -> None:
+        """Set the scale from this frame's finger lengths (robot / human, median finger)."""
+        joints = retargeter_utils.get_mano_joints_dict(normalized_joints, source)
+        palm = 0.5 * (joints["thumb"][0] + joints["pinky"][0])
+        chains = np.stack([joints[finger] for finger in FINGERS], axis=1)
+        ratios = self._urdf_finger_lengths / _chain_lengths(palm, chains)
+        self._finish_calibration(ratios, "bone lengths")
 
     def _ingest_calibration_frame(self, normalized_joints: np.ndarray, source: str) -> None:
         if not self._calibration_mags:
@@ -711,23 +751,24 @@ class AdaptiveAnalyticalRetargeter:
         all_mags = np.array(self._calibration_mags)
         median_mano = np.median(all_mags, axis=0)
         ratios = self._urdf_keyvector_mags / np.clip(median_mano, 1e-6, None)
+        self._finish_calibration(ratios, "palm to fingertip")
+
+    def _finish_calibration(self, ratios: np.ndarray, method: str) -> None:
         self._mano_scale = float(np.median(ratios))
         self._calibration_done = True
         self._last_qpos_phys = None
         self._filter.reset()
         logger.info(
-            "Adaptive retargeter auto-scale calibrated: mano_scale=%.4f (per-finger ratios=%s)",
+            "Adaptive retargeter auto-scale calibrated from %s: mano_scale=%.4f "
+            "(per-finger ratios=%s)",
+            method,
             self._mano_scale,
             np.round(ratios, 3).tolist(),
         )
 
     def _target_keypoints_in_urdf_frame(self, normalized_joints: np.ndarray) -> np.ndarray:
         scaled = normalized_joints * self._mano_scale
-        keypoints = (
-            scaled @ self._urdfhand_rot_matrix.T
-            + self._urdfhand_center
-            + np.array(MANO_TO_URDF_TRANSLATION)
-        )
+        keypoints = scaled @ self._urdfhand_rot_matrix.T + self._urdfhand_center
         if self._pinch_squeeze_cm > 0.0:
             keypoints = _squeeze_pinches(
                 keypoints,
@@ -768,7 +809,8 @@ class AdaptiveAnalyticalRetargeter:
         )
 
         opt = self._nlopt.opt(self._nlopt.LD_SLSQP, len(self._finger_joint_ids))
-        opt.set_maxeval(int(self._retarget_cfg.get("maxeval", 50)))
+        # 150: with too few, some solves stop before they converge (see the default config).
+        opt.set_maxeval(int(self._retarget_cfg.get("maxeval", 150)))
         opt.set_ftol_abs(float(self._retarget_cfg.get("ftol_abs", 1e-4)))
         opt.set_lower_bounds(self._lower_phys.tolist())
         opt.set_upper_bounds(self._upper_phys.tolist())
@@ -863,13 +905,13 @@ class AdaptiveAnalyticalRetargeter:
     def _robot_palm_from_positions(self, positions_m: np.ndarray) -> np.ndarray:
         return (
             0.5 * (positions_m[self._thumb_base_index] + positions_m[self._pinky_base_index])
-            - MANO_OFFSET_CM / M_TO_CM
+            - self._palm_offset_cm / M_TO_CM
         )
 
     def _robot_palm_from_positions_cm(self, positions_cm: np.ndarray) -> np.ndarray:
         return (
             0.5 * (positions_cm[self._thumb_base_index] + positions_cm[self._pinky_base_index])
-            - MANO_OFFSET_CM
+            - self._palm_offset_cm
         )
 
     def _loss_and_grad(

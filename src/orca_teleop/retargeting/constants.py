@@ -13,6 +13,3 @@ CALIBRATION_FRAMES = 30
 # Per-finger loss weights. Equal coefficients only rescale the loss (and thus
 # the gradient)
 DEFAULT_LOSS_COEFFS: tuple[float, float, float, float, float] = (1.0, 1.0, 1.0, 1.0, 1.0)
-
-# Translation applied after rotating normalized MANO joints into the URDF base
-MANO_TO_URDF_TRANSLATION = (0.0, 0.0, -0.02)

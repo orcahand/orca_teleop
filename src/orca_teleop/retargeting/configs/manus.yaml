@@ -1,0 +1,18 @@
+# MANUS gloves (--source manus): the webcam's config with the changes below.
+type: adaptive_analytical
+base: package:adaptive_analytical_orca_tuned.yaml
+retarget:
+  # The robot palm point at the midpoint of the thumb and pinky bases, with no offset: the
+  # same point the human side measures from. bone_lengths measures from the palm point too,
+  # so with 0 both hands' paths start at the same place.
+  palm_offset_cm: 0.0
+  # A glove's skeleton keeps its bone lengths in every pose, so the hand size comes from the
+  # first frame, whatever the pose: no open-hand pose and no wait. It is the size of the
+  # skeleton the glove software reports; if that software does not fit the skeleton to the
+  # wearer, every wearer gets the same scale.
+  hand_size: bone_lengths
+  # The pinch term: the glove's fingertip points sit on the skin, so they touch at a gap near
+  # 0, not at the webcam's 1.5 cm (MediaPipe's tip points sit inside the fingers). The wider
+  # fade (full weight below 1.0 cm, none beyond 5.5 cm) brings the term in gently, so the
+  # thumb does not jump onto a fingertip as a pinch closes.
+  pinch: {contact_cm: 0.0, near_cm: 1.0, far_cm: 5.5}

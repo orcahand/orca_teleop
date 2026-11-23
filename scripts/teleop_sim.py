@@ -18,6 +18,7 @@ import logging
 
 from orca_teleop.ingress.server import DEFAULT_PORT
 from orca_teleop.pipeline import run, run_local
+from orca_teleop.retargeting.config import DEFAULT_CONFIGS, resolve
 from orca_teleop.sim import OrcaHandSimSink
 
 
@@ -62,19 +63,24 @@ def main() -> None:
     parser.add_argument("--show-video", action="store_true", help="Show webcam feed with landmarks")
     parser.add_argument(
         "--retargeter",
-        default="adaptive_analytical",
-        choices=["rmsprop", "adaptive_analytical"],
-        help="Retargeter backend (default: adaptive_analytical)",
+        default=None,
+        choices=sorted(DEFAULT_CONFIGS),
+        help="Retargeter, with its webcam config (default: the config's type)",
     )
     parser.add_argument(
-        "--retarget-config",
+        "--retargeter-config",
         default=None,
-        help="YAML config for --retargeter adaptive_analytical",
+        help="Retargeter config instead of the default; its `type:` names the retargeter",
     )
     parser.add_argument(
         "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"]
     )
     args = parser.parse_args()
+    try:
+        args.retargeter, args.retargeter_config = resolve(args.retargeter, args.retargeter_config)
+    except (OSError, ValueError) as err:
+        parser.error(str(err))
+    args.retargeter_config = str(args.retargeter_config)
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
@@ -98,7 +104,7 @@ def main() -> None:
             show_video=args.show_video,
             sink=sink,
             retargeter_backend=args.retargeter,
-            retargeter_config_path=args.retarget_config,
+            retargeter_config_path=args.retargeter_config,
         )
     else:
         run(
@@ -107,7 +113,7 @@ def main() -> None:
             port=args.port,
             sink=sink,
             retargeter_backend=args.retargeter,
-            retargeter_config_path=args.retarget_config,
+            retargeter_config_path=args.retargeter_config,
         )
 
 

@@ -672,7 +672,8 @@ def retargeter_worker(
 
             now = time.monotonic()
             if ramp.lost(now) and hasattr(retargeter, "reset_tracking"):
-                retargeter.reset_tracking()  # a stale filter or warm start would drag the return
+                # a stale filter would drag the return; the last pose stays as the warm start
+                retargeter.reset_tracking()
 
             t_retarget_start = time.perf_counter()
             try:
@@ -789,7 +790,8 @@ def run(
         retargeter_backend: Retargeting implementation. ``"adaptive_analytical"``
             is the default Wuji-style Orca-native backend; ``"rmsprop"`` keeps
             the historical fingertip key-vector backend available.
-        retargeter_config_path: Optional YAML config for the adaptive backend.
+        retargeter_config_path: The retargeter's YAML config (``type:`` must be the
+            backend); default: the backend's packaged config (``retargeting/config.py``).
         landmark_source: Landmark convention received over gRPC. Live ``webxr``
             frames are already in the canonical 21-point layout; legacy
             ``metaquest`` HTS/Unity replays still need their historical mirror.
@@ -1115,6 +1117,12 @@ def run_manus_local(
     The bridge (``ingress/manus/bridge.py``, on the computer with the gloves) must be
     sending on ``zmq_address``; the publisher's log says so while nothing arrives.
     """
+    if run_kwargs.get("retargeter_config_path") is None:  # the gloves' own config
+        from orca_teleop.retargeting.config import DEFAULT_RETARGETER, default_config_path
+
+        backend = run_kwargs.get("retargeter_backend") or DEFAULT_RETARGETER
+        run_kwargs["retargeter_backend"] = backend
+        run_kwargs["retargeter_config_path"] = str(default_config_path(backend, "manus"))
     logger.info("MANUS publisher: glove bridge %s, %s hand", zmq_address, handedness)
     run_with_publisher(
         _manus_publisher,

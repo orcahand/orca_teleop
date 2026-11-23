@@ -55,6 +55,16 @@ If you used an earlier version of this repo, these changes affect you:
   `orca-teleop-hand --source manus`. `--zmq-address` is now `--glove-address`, also in
   `python -m orca_teleop.ingress.manus.publisher`, `scripts/manus_test.py` and
   `scripts/record_dataset.py`.
+- **Retargeter config:**
+  - `--retarget-config` is now `--retargeter-config`, also in the scripts.
+  - Each input picks its own config: `--source manus`, `run_manus_local()` and
+    `scripts/replay_manus_dataset_sim.py` now use `manus.yaml`.
+  - A config file must name its retargeter with `type:` (the older
+    `optimizer: {type: NAME}` still works); a file with neither stops with an error.
+    Without `--retargeter`, the file's `type:` picks the retargeter; a `--retargeter`
+    that disagrees with it stops with an error.
+  - The solver may now take up to 150 evaluations per frame (it was 50), also for the
+    webcam: hard frames converge, at some extra time per frame.
 - **Python API:**
   - `run_manus_local()` takes keyword arguments only.
   - `ingress.manus.conversion`: `manus_zmq_to_mano_keypoints`,
@@ -63,6 +73,9 @@ If you used an earlier version of this repo, these changes affect you:
     order.
   - `ingress.manus.publisher.DEFAULT_ZMQ_ADDRESS` is removed (use
     `orca_teleop.constants.DEFAULT_MANUS_ADDRESS`).
+  - `retargeting.constants.MANO_TO_URDF_TRANSLATION` is removed, and
+    `adaptive_analytical.MANO_OFFSET_CM` is now `DEFAULT_PALM_OFFSET_CM` (the config key
+    `retarget.palm_offset_cm` overrides it).
 
 ## Run
 
@@ -330,21 +343,32 @@ mappings from YAML, Pinocchio forward kinematics/Jacobians, and `nlopt` for boun
 per-frame optimization.
 
 Each frame it matches the fingertips and the direction of every finger segment to
-yours, closes a pinch when your thumb and a fingertip come within about 1.5 cm, and
+yours, pulls the thumb and a fingertip together as yours come near each other, and
 smooths the result with a One Euro filter (steady when you hold still, quick when you
-move).
+move). A pinch closes when your fingertips touch. With the webcam, the tip points are
+then still about 1.5 cm apart, because they sit inside the fingers; a glove's tip points
+sit on the skin, so `manus.yaml` closes the pinch at a 0 cm gap. Your hand's size is
+measured once per session: with the webcam, hold your hand open and flat for the first
+second it is in view; a glove's size comes from its skeleton at the first frame, in any
+pose.
 
-It loads `src/orca_teleop/retargeting/configs/adaptive_analytical_orca_tuned.yaml` by
-default. Pass `--retarget-config path/to/config.yaml` to experiment with frame maps or
-weights. `--retargeter rmsprop` selects the legacy fingertip key-vector retargeter for
-comparison.
+Each input has its own config in `src/orca_teleop/retargeting/configs/`: the webcam
+(and any input without a file of its own) uses `adaptive_analytical_orca_tuned.yaml`, the
+MANUS gloves `manus.yaml`. Pass `--retargeter-config path/to/config.yaml` to try another one.
+A config names its retargeter (`type: adaptive_analytical`) and can start from another file
+and set only what differs: `base: other.yaml` is a path relative to the config, and
+`base: package:manus.yaml` is a config that comes with orca_teleop (so a copy of `manus.yaml`
+works in any folder). `--retargeter rmsprop` selects the legacy
+fingertip key-vector retargeter for comparison; a `--retargeter` that disagrees with the
+config's `type` stops with an error.
 
 ## Measure fidelity
 
 Record a webcam session with `--record DIR` (gloves: see [MANUS gloves](#manus-gloves-linux)). Replay it into the normal pipeline, as
 if it came from the camera, or score how well each finger is matched. The replay
 needs the robot side running first, waiting for a publisher:
-`orca-teleop-urdf --no-local`, or `orca-teleop-hand … --no-local`.
+`orca-teleop-urdf --no-local`, or `orca-teleop-hand … --no-local` (for a glove
+recording, add `--source manus`, so the glove's retargeter config is used).
 
 ```bash
 uv run --no-sync python -m orca_teleop.ingress.replay_publisher recordings/thumb-01 --loop
