@@ -78,11 +78,13 @@ def _load(path: Path, seen: tuple[Path, ...]) -> dict[str, Any]:
             )
     else:
         base_path = path.parent / base
-        if not base_path.is_file():
+        same = base_path.is_file() and base_path.resolve() == path.resolve()
+        if same or not base_path.is_file():
+            problem = "names this file itself" if same else f"no such file: {base_path}"
             hint = ""
             if Path(base).name == base and _packaged(base).is_file():
                 hint = f"; for the packaged one, write `base: {PACKAGED}{base}`"
-            raise ValueError(f"{path}: `base: {base}`: no such file next to it{hint}")
+            raise ValueError(f"{path}: `base: {base}`: {problem}{hint}")
     return _merge(_load(base_path, (*seen, path.resolve())), cfg)
 
 

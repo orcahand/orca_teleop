@@ -185,13 +185,30 @@ def test_package_names_a_packaged_base_from_any_folder(tmp_path):
 
 def test_a_base_is_never_swapped_for_another_file(tmp_path):
     """A path is the file at that path, and package: a packaged file: no fallback."""
-    over = _write(tmp_path / "s.yaml", "base: manus.yaml\n")  # not next to it: no fallback
-    with pytest.raises(ValueError, match="write `base: package:manus.yaml`"):
-        load_config(over)
-    for bad in ("''", ".", "../configs/manus.yaml", "package:nope.yaml", "package:../x.yaml"):
+    hint = "write `base: package:manus.yaml`"
+    cases = {
+        "manus.yaml": f"no such file: .*{hint}",  # not next to it: no fallback
+        "''": "must be a file path",
+        ".": "no such file",
+        "../configs/manus.yaml": "no such file: .*configs/manus.yaml$",
+        "package:nope.yaml": "no such packaged config",
+        "package:../x.yaml": "no such packaged config",
+    }
+    for bad, error in cases.items():
         cfg = _write(tmp_path / "e.yaml", f"type: adaptive_analytical\nbase: {bad}\n")
-        with pytest.raises(ValueError, match="base"):
+        with pytest.raises(ValueError, match=error):
             load_config(cfg)
+    itself = _write(tmp_path / "manus.yaml", "base: manus.yaml\n")  # a copy of the old style
+    with pytest.raises(ValueError, match=f"names this file itself; .*{hint}"):
+        load_config(itself)
+
+
+def test_an_absolute_base_path_works(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    base = _write(tmp_path / "a" / "base.yaml", "type: adaptive_analytical\nretarget: {x: 1}\n")
+    over = _write(tmp_path / "b" / "over.yaml", f"base: {base}\nretarget: {{y: 2}}\n")
+    assert load_config(over)["retarget"] == {"x": 1, "y": 2}
 
 
 @pytest.mark.parametrize("entry", ["teleop_hand", "teleop_urdf"])
