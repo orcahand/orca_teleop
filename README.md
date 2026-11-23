@@ -41,9 +41,9 @@ tests/
 
 If you used an earlier version of this repo, these changes affect you:
 
-- **orca_core 0.14.** orca_core now finds each hand's calibration by itself, so
-  `--model_path` is optional, and `--model_path ~/.orca_ui/hands/...` no longer applies
-  (see [Run](#run)). A hand calibrated with an older orca_core (orca_ui 0.5 or older)
+- **orca_core 0.14.** orca_core now finds each hand's calibration by itself, so a
+  normal session needs no `--model_path`, and `--model_path ~/.orca_ui/hands/...` no
+  longer applies (see [Run](#run)). A hand calibrated with an older orca_core (orca_ui 0.5 or older)
   needs one new calibration in orca_ui; without it, `orca-teleop-hand` runs the full
   calibration first.
 - **`python -m orca_teleop.pipeline` is retired.** Use `orca-teleop-hand` (add `--home`
@@ -53,8 +53,16 @@ If you used an earlier version of this repo, these changes affect you:
   `--extra manus` no longer installs it. Teleop can still read `manus-client` on port
   2044, but only the bridge sends warnings. Run the glove with
   `orca-teleop-hand --source manus`. `--zmq-address` is now `--glove-address`, also in
-  `scripts/manus_test.py` and `scripts/record_dataset.py`.
-- **Python API:** `run_manus_local()` takes keyword arguments only.
+  `python -m orca_teleop.ingress.manus.publisher`, `scripts/manus_test.py` and
+  `scripts/record_dataset.py`.
+- **Python API:**
+  - `run_manus_local()` takes keyword arguments only.
+  - `ingress.manus.conversion`: `manus_zmq_to_mano_keypoints`,
+    `manus_unity_positions_to_mano_keypoints` and `MANUS_POSITION_JOINTS_FOR_MANO` are
+    removed (use `wire_to_keypoints`), and `MANUS_TO_MANO` now indexes the 25-node wire
+    order.
+  - `ingress.manus.publisher.DEFAULT_ZMQ_ADDRESS` is removed (use
+    `orca_teleop.constants.DEFAULT_MANUS_ADDRESS`).
 
 ## Run
 
