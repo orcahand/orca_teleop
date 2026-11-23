@@ -1192,7 +1192,11 @@ def test_the_recording_waits_for_the_hand_so_a_failed_start_leaves_no_folder(tmp
         send_until_streamed()  # hands stream to teleop, but the hand is not ready yet
         assert not rec.exists()
         hand_ready.set()
-        send_until_streamed()
+        lines = rec / "landmarks.jsonl"
+        deadline = time.monotonic() + 10.0
+        while not (lines.exists() and lines.read_text()) and time.monotonic() < deadline:
+            sock.send(wire.encode({"right": hand}, time.time_ns()))
+            time.sleep(0.02)
     finally:
         publisher.stop()
         thread.join(timeout=5.0)

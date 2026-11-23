@@ -1074,9 +1074,12 @@ def run_with_publisher(target: Any, args: tuple, name: str, **run_kwargs: Any) -
         run(stop_event=stop_event, on_ready=hand_ready.set, **run_kwargs)
     finally:
         stop_event.set()
+        # The hand is already off: give the publisher time to close its recording and log
+        # what it saved, and end it only if it hangs.
+        publisher_process.join(timeout=3.0)
         if publisher_process.is_alive():
             publisher_process.terminate()
-        publisher_process.join(timeout=3.0)
+            publisher_process.join(timeout=3.0)
 
 
 def _manus_publisher(

@@ -259,7 +259,9 @@ class ManusPublisher:
                 stream_future.cancel()
             channel.close()
             zmq_thread.join(timeout=2.0)
-            if self._recorder is not None:
+            if zmq_thread.is_alive():  # stuck, e.g. on a slow disk: never close under it
+                logger.warning("The glove thread did not stop; the recording may be incomplete")
+            elif self._recorder is not None:
                 _, hands = self._recorder.close()
                 logger.info("Recorded %d hands to %s", hands, self._record_dir)
             elif self._recording_pending:
