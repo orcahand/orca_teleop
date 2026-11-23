@@ -147,7 +147,7 @@ def _launch(args, sink, handedness: str) -> None:
         port=args.port,
         sink=sink,
         retargeter_backend=args.retargeter,
-        retargeter_config_path=None if (cfg := args.retargeter_config) is None else str(cfg),
+        retargeter_config_path=str(args.retargeter_config),
     )
     if args.record and not args.local:
         raise SystemExit("--record records the local publisher; drop --no-local")

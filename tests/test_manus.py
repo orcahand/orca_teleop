@@ -1062,12 +1062,15 @@ def test_ctrl_c_ends_the_stream_cleanly(caplog):
 def test_source_manus_runs_the_manus_publisher_on_the_given_bridge(monkeypatch):
     from orca_teleop import cli
 
+    def parsed(argv):
+        args = cli._common_parser("test").parse_args(argv)
+        cli._resolve_retargeter(cli._common_parser("test"), args, args.source)
+        return args
+
     got = {}
     monkeypatch.setattr(cli, "run_manus_local", lambda **kwargs: got.update(kwargs))
     monkeypatch.setattr(cli, "run_local", None)  # the webcam must not start
-    args = cli._common_parser("test").parse_args(
-        ["--source", "manus", "--glove-address", "10.0.0.2:2044"]
-    )
+    args = parsed(["--source", "manus", "--glove-address", "10.0.0.2:2044"])
     sink = object()
     cli._launch(args, sink, "right")
     assert got["zmq_address"] == "10.0.0.2:2044" and got["handedness"] == "right"
@@ -1077,21 +1080,13 @@ def test_source_manus_runs_the_manus_publisher_on_the_given_bridge(monkeypatch):
     with pytest.raises(SystemExit, match="drop --no-local"):  # no local reader to address
         cli._launch(args.__class__(**{**vars(args), "local": False}), sink, "right")
     remote = {}
-    import orca_teleop.cli as cli_module
-
-    real_run = cli_module.run
-    cli_module.run = lambda **kwargs: remote.update(kwargs)
-    try:
-        glove = cli._common_parser("test").parse_args(["--source", "manus", "--no-local"])
-        cli._resolve_retargeter(cli._common_parser("test"), glove, glove.source)
-        cli._launch(glove, sink, "right")
-    finally:
-        cli_module.run = real_run
+    monkeypatch.setattr(cli, "run", lambda **kwargs: remote.update(kwargs))
+    cli._launch(parsed(["--source", "manus", "--no-local"]), sink, "right")
     assert remote["retargeter_config_path"].endswith("manus.yaml")  # glove frames from elsewhere
-    webcam = cli._common_parser("test").parse_args(["--glove-address", "10.0.0.2:2044"])
+    webcam = parsed(["--glove-address", "10.0.0.2:2044"])
     with pytest.raises(SystemExit, match="for --source manus"):
         cli._launch(webcam, sink, "right")
-    plain = cli._common_parser("test").parse_args(["--source", "manus"])
+    plain = parsed(["--source", "manus"])
     cli._launch(plain, sink, "right")
     assert got["zmq_address"] == DEFAULT_MANUS_ADDRESS
 

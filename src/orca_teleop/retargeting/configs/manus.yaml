@@ -1,22 +1,18 @@
-# MANUS gloves (--source manus): the webcam's config with the changes below. Each change has to
-# beat the one before it, first on replayed glove clips, then on the hand.
+# MANUS gloves (--source manus): the webcam's config with the changes below.
 type: adaptive_analytical
 base: package:adaptive_analytical_orca_tuned.yaml
 retarget:
-  # The robot palm point at the midpoint of the thumb and pinky bases, with no offset: on the
-  # hand (19 Nov 2026, fresh glove calibration) 0 cm was at least as good as the webcam's 1.5 cm,
-  # and it is one unmeasured offset less.
+  # The robot palm point at the midpoint of the thumb and pinky bases, with no offset: the
+  # same point the human side measures from. bone_lengths measures from the palm point too,
+  # so with 0 both hands' paths start at the same place.
   palm_offset_cm: 0.0
-  # The glove's skeleton keeps its bone lengths in every pose (within 0.8 % over 14,606 frames
-  # of glove clips), so its palm-to-tip paths give the same scale at any first frame, with no
-  # open-hand pose and no wait (0.753-0.756 on the clips; palm to fingertip, as the webcam
-  # measures, gave 0.733-2.737). All clips so far had the same bone lengths to 0.1 mm: the scale
-  # may be MANUS's skeleton's, the same for every wearer (check with a second wearer).
+  # A glove's skeleton keeps its bone lengths in every pose, so the hand size comes from the
+  # first frame, whatever the pose: no open-hand pose and no wait. It is the size of the
+  # skeleton the glove software reports; if that software does not fit the skeleton to the
+  # wearer, every wearer gets the same scale.
   hand_size: bone_lengths
-  # The pinch term: the glove's fingertips sit on the skin, so they touch at a 2-7 mm gap, not
-  # at the webcam's 1.5 cm (MediaPipe's tips sit inside the fingers); with 1.5 cm the robot
-  # closed ~26 mm early on replayed clips, with 0 about 9 mm. A wider fade (full below 1.0 cm,
-  # off by 5.5 cm) stops the thumb jumping onto a fingertip as the term comes in (replays:
-  # sweep snaps 11 -> 0, fist jumps 16 -> 3). On the hand (Dynamixel, 20 and 23 Nov, blind
-  # against contact 0 with the webcam's fade): better fast pinches, sweep and slide; a tie overall.
+  # The pinch term: the glove's fingertip points sit on the skin, so they touch at a gap near
+  # 0, not at the webcam's 1.5 cm (MediaPipe's tip points sit inside the fingers). The wider
+  # fade (full weight below 1.0 cm, none beyond 5.5 cm) brings the term in gently, so the
+  # thumb does not jump onto a fingertip as a pinch closes.
   pinch: {contact_cm: 0.0, near_cm: 1.0, far_cm: 5.5}

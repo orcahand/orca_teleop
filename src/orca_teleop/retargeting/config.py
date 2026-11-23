@@ -9,7 +9,7 @@ with an error.
 A file can start from another one and set only what differs: mappings merge key by key,
 any other value replaces. ``base: OTHER.yaml`` is a path relative to the file (or an
 absolute one); ``base: package:NAME.yaml`` is a config packaged with orca_teleop, so a
-copy of a packaged file works in any folder. Files from before 19 Nov 2026 name their retargeter in
+copy of a packaged file works in any folder. Older files name their retargeter in
 ``optimizer: {type: NAME}``; that still counts.
 """
 
@@ -101,7 +101,7 @@ def config_type(path: str | Path) -> str:
     cfg = load_config(path)
     kind = cfg.get("type")
     if kind is None and isinstance(cfg.get("optimizer"), dict):
-        kind = cfg["optimizer"].get("type")  # the schema before 19 Nov 2026
+        kind = cfg["optimizer"].get("type")  # the older schema
     if not isinstance(kind, str) or kind not in DEFAULT_CONFIGS:
         raise ValueError(
             f"{path} must name its retargeter with `type:`, one of {sorted(DEFAULT_CONFIGS)}; "
