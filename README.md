@@ -37,6 +37,25 @@ tests/
    orca_core's `scripts/calibrate.py`. On an uncalibrated hand,
    `orca-teleop-hand` starts the full calibration by itself.
 
+## Changes for existing users
+
+If you used an earlier version of this repo, these changes affect you:
+
+- **orca_core 0.14.** orca_core now finds each hand's calibration by itself, so
+  `--model_path` is optional, and `--model_path ~/.orca_ui/hands/...` no longer applies
+  (see [Run](#run)). A hand calibrated with an older orca_core (orca_ui 0.5 or older)
+  needs one new calibration in orca_ui; without it, `orca-teleop-hand` runs the full
+  calibration first.
+- **`python -m orca_teleop.pipeline` is retired.** Use `orca-teleop-hand` (add `--home`
+  for its old start pose) or `orca-teleop-urdf`. Its `--visualize-landmarks` is gone.
+- **The start ramp** is 0.5 s (it was 0.25 s).
+- **MANUS gloves:** the Python bridge replaces the C++ `manus-client`, and
+  `--extra manus` no longer installs it. Teleop can still read `manus-client` on port
+  2044, but only the bridge sends warnings. Run the glove with
+  `orca-teleop-hand --source manus`. `--zmq-address` is now `--glove-address`, also in
+  `scripts/manus_test.py` and `scripts/record_dataset.py`.
+- **Python API:** `run_manus_local()` takes keyword arguments only.
+
 ## Run
 
 Check the webcam tracking in the 3D viewer first, with no hand attached:
@@ -180,7 +199,7 @@ older `manus-client` first if it runs. When all is well, the bridge logs:
 Publishing glove frames on tcp://127.0.0.1:2044
 MANUS SDK connected (SDKIntegrated)
 MANUS licence: ..., sdk, raw, ..., integrated, ..., linuxTarget, ...
-Glove 152439973 is the right hand, 25 nodes
+Glove 12345678 is the right hand, 25 nodes
 Loaded the right glove's calibration /home/you/gloves/Calibration_right.mcal (Success)
 Sent per second: ergonomics 121, landscape 1, raw_device_data 121, right 121
 ```
@@ -218,7 +237,7 @@ lets only programs on the glove computer read it. Choose one way:
 
   ```bash
   ssh -N -L 2044:127.0.0.1:2044 USER@GLOVE_PC      # teleop computer, keep it open
-  uv run --extra teleop --extra manus orca-teleop-hand --source manus --model_path ...
+  uv run --extra teleop --extra manus orca-teleop-hand --source manus
   ```
 
 - **Two computers, over the network (no SSH):** the bridge must listen on the network,
@@ -228,15 +247,11 @@ lets only programs on the glove computer read it. Choose one way:
 
   ```bash
   python ~/manus-bridge/bridge.py --calibration-dir ~/gloves --bind tcp://0.0.0.0:2044   # glove computer
-  uv run --extra teleop --extra manus orca-teleop-hand --source manus --glove-address GLOVE_PC:2044 --model_path ...
+  uv run --extra teleop --extra manus orca-teleop-hand --source manus --glove-address GLOVE_PC:2044
   ```
 
-If you used gloves with this repo before: the Python bridge replaces our C++
-`manus-client`. Teleop can still read `manus-client` on port 2044, but only the bridge
-sends warnings. Run the glove with `orca-teleop-hand --source manus`; `--zmq-address` is
-now `--glove-address`. `python -m orca_teleop.pipeline` is retired: use `orca-teleop-hand`
-(add `--home` for its old start pose) or `orca-teleop-urdf`; its `--visualize-landmarks`
-is gone.
+If you used gloves with this repo before, see
+[Changes for existing users](#changes-for-existing-users).
 
 ### Warnings
 
