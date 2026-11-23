@@ -13,3 +13,10 @@ retarget:
   # measures, gave 0.733-2.737). All clips so far had the same bone lengths to 0.1 mm: the scale
   # may be MANUS's skeleton's, the same for every wearer (check with a second wearer).
   hand_size: bone_lengths
+  # The pinch term: the glove's fingertips sit on the skin, so they touch at a 2-7 mm gap, not
+  # at the webcam's 1.5 cm (MediaPipe's tips sit inside the fingers); with 1.5 cm the robot
+  # closed ~26 mm early on replayed clips, with 0 about 9 mm. A wider fade (full below 1.0 cm,
+  # off by 5.5 cm) stops the thumb jumping onto a fingertip as the term comes in (replays:
+  # sweep snaps 11 -> 0, fist jumps 16 -> 3). On the hand (Dynamixel, 20 and 23 Nov, blind
+  # against contact 0 with the webcam's fade): better fast pinches, sweep and slide; a tie overall.
+  pinch: {contact_cm: 0.0, near_cm: 1.0, far_cm: 5.5}
